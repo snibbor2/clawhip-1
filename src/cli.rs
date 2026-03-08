@@ -88,18 +88,13 @@ pub enum TmuxCommands {
     },
 }
 
-#[derive(Debug, Clone, Subcommand)]
+#[derive(Debug, Clone, Default, Subcommand)]
 pub enum ConfigCommand {
     /// Open the interactive config editor.
+    #[default]
     Interactive,
     /// Print the active config as TOML.
     Show,
     /// Print the config file path.
     Path,
-}
-
-impl Default for ConfigCommand {
-    fn default() -> Self {
-        Self::Interactive
-    }
 }

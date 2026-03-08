@@ -111,7 +111,7 @@ impl AppConfig {
             match prompt("Selection")?.trim() {
                 "1" => self.discord.bot_token = empty_to_none(prompt("Bot token")?),
                 "2" => self.defaults.channel = empty_to_none(prompt("Default channel")?),
-                "3" => self.defaults.format = prompt_format(None)?,
+                "3" => self.defaults.format = prompt_format(Some(self.defaults.format.clone()))?,
                 "4" => self.upsert_route()?,
                 "5" => self.remove_route()?,
                 "6" => {
@@ -215,9 +215,15 @@ fn prompt(label: &str) -> Result<String> {
 }
 
 fn prompt_with_default(label: &str, default: Option<&str>) -> Result<String> {
-    match default {
-        Some(default) => prompt(&format!("{label} [{default}]")),
-        None => prompt(label),
+    let response = match default {
+        Some(default) => prompt(&format!("{label} [{default}]"))?,
+        None => prompt(label)?,
+    };
+
+    if response.trim().is_empty() {
+        Ok(default.unwrap_or_default().to_string())
+    } else {
+        Ok(response)
     }
 }
 

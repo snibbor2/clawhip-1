@@ -28,7 +28,6 @@ async fn main() {
 
 async fn real_main() -> Result<()> {
     let cli = Cli::parse();
-
     let config_path = cli.config_path();
 
     match cli.command {

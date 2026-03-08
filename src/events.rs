@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::io::{self, Read};
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 use crate::Result;
 
@@ -37,9 +37,9 @@ impl MessageFormat {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct IncomingEvent {
-    #[serde(rename = "type", alias = "kind", alias = "event")]
+    #[serde(rename = "type")]
     pub kind: String,
     #[serde(default)]
     pub channel: Option<String>,
@@ -49,6 +49,42 @@ pub struct IncomingEvent {
     pub template: Option<String>,
     #[serde(default)]
     pub payload: Value,
+}
+
+#[derive(Debug, Deserialize)]
+struct IncomingEventWire {
+    #[serde(rename = "type", alias = "kind", alias = "event")]
+    kind: String,
+    #[serde(default)]
+    channel: Option<String>,
+    #[serde(default)]
+    format: Option<MessageFormat>,
+    #[serde(default)]
+    template: Option<String>,
+    #[serde(default)]
+    payload: Option<Value>,
+    #[serde(flatten)]
+    extra: BTreeMap<String, Value>,
+}
+
+impl<'de> Deserialize<'de> for IncomingEvent {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = IncomingEventWire::deserialize(deserializer)?;
+        let payload = wire
+            .payload
+            .unwrap_or_else(|| Value::Object(Map::from_iter(wire.extra)));
+
+        Ok(Self {
+            kind: wire.kind,
+            channel: wire.channel,
+            format: wire.format,
+            template: wire.template,
+            payload,
+        })
+    }
 }
 
 impl IncomingEvent {
@@ -192,18 +228,12 @@ pub fn parse_stream(body: &str) -> Result<Vec<IncomingEvent>> {
             .map_err(Into::into);
     }
 
-    if !trimmed.contains('\n') && trimmed.starts_with('{') {
-        return serde_json::from_str::<IncomingEvent>(trimmed)
-            .map(|event| vec![normalize_event(event)])
-            .map_err(Into::into);
+    let stream = serde_json::Deserializer::from_str(trimmed).into_iter::<IncomingEvent>();
+    let mut events = Vec::new();
+    for event in stream {
+        events.push(normalize_event(event?));
     }
-
-    trimmed
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .map(|line| serde_json::from_str::<IncomingEvent>(line).map(normalize_event))
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(Into::into)
+    Ok(events)
 }
 
 pub fn normalize_event(mut event: IncomingEvent) -> IncomingEvent {
@@ -280,6 +310,29 @@ mod tests {
         .unwrap();
         assert_eq!(events.len(), 2);
         assert_eq!(events[1].payload["message"], "two");
+    }
+
+    #[test]
+    fn parses_flat_event_fields_when_payload_is_missing() {
+        let events =
+            parse_stream(r#"{"type":"custom","channel":"123","message":"flat payload works"}"#)
+                .unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].channel.as_deref(), Some("123"));
+        assert_eq!(events[0].payload["message"], "flat payload works");
+    }
+
+    #[test]
+    fn parses_pretty_printed_single_event() {
+        let events = parse_stream(
+            r#"{
+  "type": "custom",
+  "message": "pretty stdin works"
+}"#,
+        )
+        .unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].payload["message"], "pretty stdin works");
     }
 
     #[test]
