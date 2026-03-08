@@ -1,9 +1,11 @@
 mod cli;
+mod client;
 mod config;
+mod daemon;
 mod discord;
 mod events;
+mod monitor;
 mod router;
-mod server;
 mod tmux_wrapper;
 
 use std::sync::Arc;
@@ -11,13 +13,12 @@ use std::sync::Arc;
 use clap::Parser;
 
 use crate::cli::{Cli, Commands, ConfigCommand, GitCommands, GithubCommands, TmuxCommands};
+use crate::client::DaemonClient;
 use crate::config::AppConfig;
-use crate::discord::DiscordClient;
 use crate::events::IncomingEvent;
-use crate::router::Router;
 
-type DynError = Box<dyn std::error::Error + Send + Sync>;
-type Result<T> = std::result::Result<T, DynError>;
+pub type DynError = Box<dyn std::error::Error + Send + Sync>;
+pub type Result<T> = std::result::Result<T, DynError>;
 
 #[tokio::main]
 async fn main() {
@@ -30,118 +31,68 @@ async fn main() {
 async fn real_main() -> Result<()> {
     let cli = Cli::parse();
     let config_path = cli.config_path();
+    let config = Arc::new(AppConfig::load_or_default(&config_path)?);
 
     match cli.command {
+        Commands::Start { port } => daemon::run(config, port).await,
+        Commands::Status => {
+            let client = DaemonClient::from_config(config.as_ref());
+            let health = client.health().await?;
+            println!("{}", serde_json::to_string_pretty(&health)?);
+            Ok(())
+        }
+        Commands::Send { channel, message } => {
+            let client = DaemonClient::from_config(config.as_ref());
+            client.send_event(&IncomingEvent::custom(channel, message)).await
+        }
+        Commands::Git { command } => {
+            let client = DaemonClient::from_config(config.as_ref());
+            let event = match command {
+                GitCommands::Commit { repo, branch, commit, summary, channel } => {
+                    IncomingEvent::git_commit(repo, branch, commit, summary, channel)
+                }
+                GitCommands::BranchChanged { repo, old_branch, new_branch, channel } => {
+                    IncomingEvent::git_branch_changed(repo, old_branch, new_branch, channel)
+                }
+            };
+            client.send_event(&event).await
+        }
+        Commands::Github { command } => {
+            let client = DaemonClient::from_config(config.as_ref());
+            let event = match command {
+                GithubCommands::IssueOpened { repo, number, title, channel } => {
+                    IncomingEvent::github_issue_opened(repo, number, title, channel)
+                }
+                GithubCommands::PrStatusChanged { repo, number, title, old_status, new_status, url, channel } => {
+                    IncomingEvent::git_pr_status_changed(repo, number, title, old_status, new_status, url, channel)
+                }
+            };
+            client.send_event(&event).await
+        }
+        Commands::Tmux { command } => match command {
+            TmuxCommands::Keyword { session, keyword, line, channel } => {
+                let client = DaemonClient::from_config(config.as_ref());
+                client.send_event(&IncomingEvent::tmux_keyword(session, keyword, line, channel)).await
+            }
+            TmuxCommands::Stale { session, pane, minutes, last_line, channel } => {
+                let client = DaemonClient::from_config(config.as_ref());
+                client.send_event(&IncomingEvent::tmux_stale(session, pane, minutes, last_line, channel)).await
+            }
+            TmuxCommands::New(args) => tmux_wrapper::run(args, config.as_ref()).await,
+        },
         Commands::Config { command } => match command.unwrap_or(ConfigCommand::Interactive) {
             ConfigCommand::Interactive => {
-                let mut config = AppConfig::load_or_default(&config_path)?;
-                config.run_interactive_editor(&config_path)?;
+                let mut editable = AppConfig::load_or_default(&config_path)?;
+                editable.run_interactive_editor(&config_path)
             }
             ConfigCommand::Show => {
-                let config = AppConfig::load_or_default(&config_path)?;
                 println!("{}", config.to_pretty_toml()?);
+                Ok(())
             }
-            ConfigCommand::Path => println!("{}", config_path.display()),
+            ConfigCommand::Path => {
+                println!("{}", config_path.display());
+                Ok(())
+            }
         },
-        command => {
-            let config = Arc::new(AppConfig::load_or_default(&config_path)?);
-            let router = Arc::new(Router::new(config.clone()));
-            let discord = Arc::new(DiscordClient::from_config(config.clone())?);
-
-            match command {
-                Commands::Custom { channel, message } => {
-                    let event = IncomingEvent::custom(channel, message);
-                    router.dispatch(&event, discord.as_ref()).await?;
-                }
-                Commands::Git { command } => match command {
-                    GitCommands::Commit {
-                        repo,
-                        branch,
-                        commit,
-                        summary,
-                        channel,
-                    } => {
-                        let event =
-                            IncomingEvent::git_commit(repo, branch, commit, summary, channel);
-                        router.dispatch(&event, discord.as_ref()).await?;
-                    }
-                    GitCommands::BranchChanged {
-                        repo,
-                        old_branch,
-                        new_branch,
-                        channel,
-                    } => {
-                        let event = IncomingEvent::git_branch_changed(
-                            repo, old_branch, new_branch, channel,
-                        );
-                        router.dispatch(&event, discord.as_ref()).await?;
-                    }
-                },
-                Commands::Github { command } => match command {
-                    GithubCommands::IssueOpened {
-                        repo,
-                        number,
-                        title,
-                        channel,
-                    } => {
-                        let event =
-                            IncomingEvent::github_issue_opened(repo, number, title, channel);
-                        router.dispatch(&event, discord.as_ref()).await?;
-                    }
-                    GithubCommands::PrStatusChanged {
-                        repo,
-                        number,
-                        title,
-                        old_status,
-                        new_status,
-                        url,
-                        channel,
-                    } => {
-                        let event = IncomingEvent::git_pr_status_changed(
-                            repo, number, title, old_status, new_status, url, channel,
-                        );
-                        router.dispatch(&event, discord.as_ref()).await?;
-                    }
-                },
-                Commands::Tmux { command } => match command {
-                    TmuxCommands::Keyword {
-                        session,
-                        keyword,
-                        line,
-                        channel,
-                    } => {
-                        let event = IncomingEvent::tmux_keyword(session, keyword, line, channel);
-                        router.dispatch(&event, discord.as_ref()).await?;
-                    }
-                    TmuxCommands::Stale {
-                        session,
-                        pane,
-                        minutes,
-                        last_line,
-                        channel,
-                    } => {
-                        let event =
-                            IncomingEvent::tmux_stale(session, pane, minutes, last_line, channel);
-                        router.dispatch(&event, discord.as_ref()).await?;
-                    }
-                    TmuxCommands::New(args) => {
-                        tmux_wrapper::run(args, router, discord).await?;
-                    }
-                },
-                Commands::Stdin => {
-                    let body = crate::events::read_stdin()?;
-                    let events = crate::events::parse_stream(&body)?;
-                    for event in events {
-                        router.dispatch(&event, discord.as_ref()).await?;
-                    }
-                }
-                Commands::Serve { port } => {
-                    server::serve(([0, 0, 0, 0], port).into(), router, discord).await?;
-                }
-                Commands::Config { .. } => unreachable!("config handled earlier"),
-            }
-        }
     }
-
-    Ok(())
 }

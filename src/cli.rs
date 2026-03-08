@@ -8,7 +8,7 @@ use crate::events::MessageFormat;
 #[command(
     name = "clawhip",
     version,
-    about = "Standalone event-to-channel notification gateway for Discord"
+    about = "Daemon-first event gateway for Discord"
 )]
 pub struct Cli {
     /// Override the config file path.
@@ -29,34 +29,35 @@ impl Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Commands {
-    /// Send a custom notification.
-    Custom {
+    /// Start the daemon (HTTP server + git/tmux monitors).
+    #[command(alias = "serve")]
+    Start {
+        #[arg(long)]
+        port: Option<u16>,
+    },
+    /// Check daemon health/status.
+    Status,
+    /// Send a custom event to the local daemon.
+    Send {
         #[arg(long)]
         channel: Option<String>,
         #[arg(long)]
         message: String,
     },
-    /// Emit git-related notifications.
+    /// Send git-related events to the local daemon.
     Git {
         #[command(subcommand)]
         command: GitCommands,
     },
-    /// Emit GitHub-related notifications.
+    /// Send GitHub-related events to the local daemon.
     Github {
         #[command(subcommand)]
         command: GithubCommands,
     },
-    /// Emit tmux-related notifications and wrappers.
+    /// Send tmux-related events to the local daemon or launch/register tmux sessions.
     Tmux {
         #[command(subcommand)]
         command: TmuxCommands,
-    },
-    /// Read JSON event objects from stdin.
-    Stdin,
-    /// Run an HTTP webhook receiver.
-    Serve {
-        #[arg(long, default_value_t = 8765)]
-        port: u16,
     },
     /// Manage configuration.
     Config {
@@ -67,7 +68,6 @@ pub enum Commands {
 
 #[derive(Debug, Subcommand)]
 pub enum GitCommands {
-    /// Emit a git commit event.
     Commit {
         #[arg(long)]
         repo: String,
@@ -80,7 +80,6 @@ pub enum GitCommands {
         #[arg(long)]
         channel: Option<String>,
     },
-    /// Emit a git branch-changed event.
     BranchChanged {
         #[arg(long)]
         repo: String,
@@ -95,7 +94,6 @@ pub enum GitCommands {
 
 #[derive(Debug, Subcommand)]
 pub enum GithubCommands {
-    /// Emit a GitHub issue-opened event.
     IssueOpened {
         #[arg(long)]
         repo: String,
@@ -106,7 +104,6 @@ pub enum GithubCommands {
         #[arg(long)]
         channel: Option<String>,
     },
-    /// Emit a pull-request status-changed event.
     PrStatusChanged {
         #[arg(long)]
         repo: String,
@@ -127,7 +124,6 @@ pub enum GithubCommands {
 
 #[derive(Debug, Subcommand)]
 pub enum TmuxCommands {
-    /// Emit a tmux keyword event.
     Keyword {
         #[arg(long)]
         session: String,
@@ -138,7 +134,6 @@ pub enum TmuxCommands {
         #[arg(long)]
         channel: Option<String>,
     },
-    /// Emit a tmux stale event.
     Stale {
         #[arg(long)]
         session: String,
@@ -151,7 +146,6 @@ pub enum TmuxCommands {
         #[arg(long)]
         channel: Option<String>,
     },
-    /// Launch a tmux session through clawhip and monitor its pane output.
     New(TmuxNewArgs),
 }
 
@@ -174,54 +168,32 @@ impl From<TmuxWrapperFormat> for MessageFormat {
 
 #[derive(Debug, Clone, Args)]
 pub struct TmuxNewArgs {
-    /// tmux session name.
     #[arg(short = 's', long = "session")]
     pub session: String,
-
-    /// Optional tmux window name.
     #[arg(short = 'n', long = "window-name")]
     pub window_name: Option<String>,
-
-    /// Optional starting directory for tmux.
     #[arg(short = 'c', long = "cwd")]
     pub cwd: Option<String>,
-
-    /// Which Discord channel to notify.
     #[arg(long)]
     pub channel: Option<String>,
-
-    /// Mention/tag prefix to prepend to wrapper-generated notifications.
     #[arg(long)]
     pub mention: Option<String>,
-
-    /// Comma-separated keyword patterns to watch for in pane output.
     #[arg(long, value_delimiter = ',')]
     pub keywords: Vec<String>,
-
-    /// Fire a stale event if the pane has no new output for this many minutes.
     #[arg(long, default_value_t = 10)]
     pub stale_minutes: u64,
-
-    /// Output format for wrapper-generated notifications.
     #[arg(long)]
     pub format: Option<TmuxWrapperFormat>,
-
-    /// Attach after launching. The wrapper continues monitoring until the session exits.
     #[arg(long, default_value_t = false)]
     pub attach: bool,
-
-    /// Command and arguments to run inside the tmux session, after `--`.
     #[arg(last = true, allow_hyphen_values = true)]
     pub command: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Subcommand)]
 pub enum ConfigCommand {
-    /// Open the interactive config editor.
     #[default]
     Interactive,
-    /// Print the active config as TOML.
     Show,
-    /// Print the config file path.
     Path,
 }

@@ -14,14 +14,38 @@ pub struct AppConfig {
     #[serde(default)]
     pub discord: DiscordConfig,
     #[serde(default)]
+    pub daemon: DaemonConfig,
+    #[serde(default)]
     pub defaults: DefaultsConfig,
     #[serde(default)]
     pub routes: Vec<RouteRule>,
+    #[serde(default)]
+    pub monitors: MonitorConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DiscordConfig {
     pub bot_token: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DaemonConfig {
+    #[serde(default = "default_bind_host")]
+    pub bind_host: String,
+    #[serde(default = "default_port")]
+    pub port: u16,
+    #[serde(default = "default_base_url")]
+    pub base_url: String,
+}
+
+impl Default for DaemonConfig {
+    fn default() -> Self {
+        Self {
+            bind_host: default_bind_host(),
+            port: default_port(),
+            base_url: default_base_url(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,21 +74,125 @@ pub struct RouteRule {
     pub template: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MonitorConfig {
+    #[serde(default = "default_poll_interval")]
+    pub poll_interval_secs: u64,
+    pub github_token: Option<String>,
+    #[serde(default = "default_github_api_base")]
+    pub github_api_base: String,
+    #[serde(default)]
+    pub git: GitMonitorConfig,
+    #[serde(default)]
+    pub tmux: TmuxMonitorConfig,
+}
+
+impl Default for MonitorConfig {
+    fn default() -> Self {
+        Self {
+            poll_interval_secs: default_poll_interval(),
+            github_token: None,
+            github_api_base: default_github_api_base(),
+            git: GitMonitorConfig::default(),
+            tmux: TmuxMonitorConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct GitMonitorConfig {
+    #[serde(default)]
+    pub repos: Vec<GitRepoMonitor>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TmuxMonitorConfig {
+    #[serde(default)]
+    pub sessions: Vec<TmuxSessionMonitor>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitRepoMonitor {
+    pub path: String,
+    pub name: Option<String>,
+    #[serde(default = "default_remote")]
+    pub remote: String,
+    pub github_repo: Option<String>,
+    #[serde(default = "default_true")]
+    pub emit_commits: bool,
+    #[serde(default = "default_true")]
+    pub emit_branch_changes: bool,
+    #[serde(default)]
+    pub emit_pr_status: bool,
+    pub channel: Option<String>,
+    pub mention: Option<String>,
+    pub format: Option<MessageFormat>,
+}
+
+impl Default for GitRepoMonitor {
+    fn default() -> Self {
+        Self {
+            path: String::new(),
+            name: None,
+            remote: default_remote(),
+            github_repo: None,
+            emit_commits: true,
+            emit_branch_changes: true,
+            emit_pr_status: false,
+            channel: None,
+            mention: None,
+            format: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TmuxSessionMonitor {
+    pub session: String,
+    #[serde(default)]
+    pub keywords: Vec<String>,
+    #[serde(default = "default_stale_minutes")]
+    pub stale_minutes: u64,
+    pub channel: Option<String>,
+    pub mention: Option<String>,
+    pub format: Option<MessageFormat>,
+}
+
+impl Default for TmuxSessionMonitor {
+    fn default() -> Self {
+        Self {
+            session: String::new(),
+            keywords: Vec::new(),
+            stale_minutes: default_stale_minutes(),
+            channel: None,
+            mention: None,
+            format: None,
+        }
+    }
+}
+
 pub fn default_config_path() -> PathBuf {
     if let Ok(override_path) = env::var("CLAWHIP_CONFIG") {
         return PathBuf::from(override_path);
     }
-
     let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
     PathBuf::from(home).join(".clawhip").join("config.toml")
 }
+
+fn default_bind_host() -> String { "0.0.0.0".to_string() }
+fn default_port() -> u16 { 8765 }
+fn default_base_url() -> String { format!("http://127.0.0.1:{}", default_port()) }
+fn default_poll_interval() -> u64 { 5 }
+fn default_github_api_base() -> String { "https://api.github.com".to_string() }
+fn default_remote() -> String { "origin".to_string() }
+fn default_stale_minutes() -> u64 { 10 }
+fn default_true() -> bool { true }
 
 impl AppConfig {
     pub fn load_or_default(path: &Path) -> Result<Self> {
         if !path.exists() {
             return Ok(Self::default());
         }
-
         let raw = fs::read_to_string(path)?;
         Ok(toml::from_str(&raw)?)
     }
@@ -88,128 +216,65 @@ impl AppConfig {
             .or_else(|| self.discord.bot_token.clone())
     }
 
+    pub fn daemon_base_url(&self) -> String {
+        env::var("CLAWHIP_DAEMON_URL")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| self.daemon.base_url.clone())
+    }
+
+    pub fn monitor_github_token(&self) -> Option<String> {
+        env::var("CLAWHIP_GITHUB_TOKEN")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .or_else(|| self.monitors.github_token.clone())
+    }
+
     pub fn run_interactive_editor(&mut self, path: &Path) -> Result<()> {
         println!("clawhip config editor");
         println!("Path: {}", path.display());
         println!();
-
         loop {
             self.print_summary();
             println!("Choose an action:");
             println!("  1) Set Discord bot token");
-            println!("  2) Set default channel");
-            println!("  3) Set default format");
-            println!("  4) Add route");
-            println!("  5) Remove route");
-            println!("  6) Save and exit");
-            println!("  7) Exit without saving");
-
+            println!("  2) Set daemon base URL");
+            println!("  3) Set default channel");
+            println!("  4) Set default format");
+            println!("  5) Save and exit");
+            println!("  6) Exit without saving");
+            println!("  7) Print config template hint");
             match prompt("Selection")?.trim() {
                 "1" => self.discord.bot_token = empty_to_none(prompt("Bot token")?),
-                "2" => self.defaults.channel = empty_to_none(prompt("Default channel")?),
-                "3" => self.defaults.format = prompt_format(Some(self.defaults.format.clone()))?,
-                "4" => self.add_route()?,
-                "5" => self.remove_route()?,
-                "6" => {
-                    self.save(path)?;
-                    println!("Saved {}", path.display());
-                    break;
-                }
-                "7" => {
-                    println!("Discarded changes.");
-                    break;
-                }
+                "2" => self.daemon.base_url = prompt_with_default("Daemon base URL", Some(&self.daemon.base_url))?,
+                "3" => self.defaults.channel = empty_to_none(prompt("Default channel")?),
+                "4" => self.defaults.format = prompt_format(Some(self.defaults.format.clone()))?,
+                "5" => { self.save(path)?; println!("Saved {}", path.display()); break; }
+                "6" => { println!("Discarded changes."); break; }
+                "7" => self.print_template_hint(),
                 _ => println!("Unknown selection."),
             }
             println!();
         }
-
         Ok(())
     }
 
     fn print_summary(&self) {
-        let token_status = if self
-            .discord
-            .bot_token
-            .as_deref()
-            .unwrap_or_default()
-            .is_empty()
-        {
-            "missing"
-        } else {
-            "configured"
-        };
+        let token_status = if self.discord.bot_token.as_deref().unwrap_or_default().is_empty() { "missing" } else { "configured" };
         println!("Current config summary:");
         println!("  Discord token: {token_status}");
-        println!(
-            "  Default channel: {}",
-            self.defaults.channel.as_deref().unwrap_or("<unset>")
-        );
+        println!("  Daemon base URL: {}", self.daemon.base_url);
+        println!("  Bind host/port: {}:{}", self.daemon.bind_host, self.daemon.port);
+        println!("  Default channel: {}", self.defaults.channel.as_deref().unwrap_or("<unset>"));
         println!("  Default format: {}", self.defaults.format.as_str());
-        if self.routes.is_empty() {
-            println!("  Routes: <none>");
-        } else {
-            println!("  Routes:");
-            for (index, route) in self.routes.iter().enumerate() {
-                let filter = if route.filter.is_empty() {
-                    "<none>".to_string()
-                } else {
-                    route
-                        .filter
-                        .iter()
-                        .map(|(key, value)| format!("{key}={value}"))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                };
-                println!(
-                    "    [{}] event={}, filter={}, channel={}, format={}, template={}",
-                    index,
-                    route.event,
-                    filter,
-                    route.channel.as_deref().unwrap_or("<default>"),
-                    route
-                        .format
-                        .as_ref()
-                        .map(MessageFormat::as_str)
-                        .unwrap_or("<default>"),
-                    route.template.as_deref().unwrap_or("<default>")
-                );
-            }
-        }
-        println!();
+        println!("  Routes: {}", self.routes.len());
+        println!("  Git monitors: {}", self.monitors.git.repos.len());
+        println!("  Tmux monitors: {}", self.monitors.tmux.sessions.len());
     }
 
-    fn add_route(&mut self) -> Result<()> {
-        let event = prompt("Event pattern (examples: github.*, tmux.*, git.commit)")?;
-        let event = event.trim().to_string();
-        if event.is_empty() {
-            println!("Event pattern cannot be empty.");
-            return Ok(());
-        }
-        let filter = prompt("Filter pairs (comma-separated key=value, optional)")?;
-        let channel = prompt("Route channel (blank = use default)")?;
-        let format = prompt_format(None)?;
-        let template = prompt("Route template (blank = use built-in formatter)")?;
-        self.routes.push(RouteRule {
-            event,
-            filter: parse_filter_map(&filter),
-            channel: empty_to_none(channel),
-            format: Some(format),
-            template: empty_to_none(template),
-        });
-        Ok(())
-    }
-
-    fn remove_route(&mut self) -> Result<()> {
-        let index = prompt("Route index to remove")?;
-        let index: usize = index.trim().parse()?;
-        if index < self.routes.len() {
-            self.routes.remove(index);
-            println!("Removed route {index}");
-        } else {
-            println!("No route at index {index}");
-        }
-        Ok(())
+    fn print_template_hint(&self) {
+        println!("Edit the config file directly for routes and monitor definitions.");
+        println!("Sections: [daemon], [[routes]], [[monitors.git.repos]], [[monitors.tmux.sessions]]");
     }
 }
 
@@ -221,32 +286,21 @@ fn prompt(label: &str) -> Result<String> {
     Ok(value.trim_end().to_string())
 }
 
-fn prompt_format(default: Option<MessageFormat>) -> Result<MessageFormat> {
-    let default_value = default.unwrap_or(MessageFormat::Compact);
-    let input = prompt(&format!(
-        "Format [{}] (compact/alert/inline/raw)",
-        default_value.as_str()
-    ))?;
-    if input.trim().is_empty() {
-        return Ok(default_value);
+fn prompt_with_default(label: &str, default: Option<&str>) -> Result<String> {
+    match default {
+        Some(default) => prompt(&format!("{label} [{default}]")),
+        None => prompt(label),
     }
-    MessageFormat::from_label(input.trim())
 }
 
-fn parse_filter_map(input: &str) -> BTreeMap<String, String> {
-    input
-        .split(',')
-        .filter_map(|pair| pair.split_once('='))
-        .map(|(key, value)| (key.trim().to_string(), value.trim().to_string()))
-        .filter(|(key, value)| !key.is_empty() && !value.is_empty())
-        .collect()
+fn prompt_format(default: Option<MessageFormat>) -> Result<MessageFormat> {
+    let default_value = default.unwrap_or(MessageFormat::Compact);
+    let input = prompt(&format!("Format [{}] (compact/alert/inline/raw)", default_value.as_str()))?;
+    if input.trim().is_empty() { return Ok(default_value); }
+    MessageFormat::from_label(input.trim())
 }
 
 fn empty_to_none(value: String) -> Option<String> {
     let trimmed = value.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
+    if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
 }
