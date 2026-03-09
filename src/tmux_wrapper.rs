@@ -233,8 +233,6 @@ fn tmux_stale_event(
     event
 }
 
-const RETRY_ENTER_DELAYS_MS: [u64; 3] = [500, 1_000, 2_000];
-
 async fn launch_session(args: &TmuxNewArgs) -> Result<()> {
     let mut command = Command::new(tmux_bin());
     command
@@ -255,7 +253,13 @@ async fn launch_session(args: &TmuxNewArgs) -> Result<()> {
 
     if let Some(command) = build_command_to_send(args) {
         if args.retry_enter {
-            send_keys_reliable(&args.session, &command, RETRY_ENTER_DELAYS_MS.len() as u32).await?;
+            send_keys_reliable(
+                &args.session,
+                &command,
+                args.retry_enter_count,
+                args.retry_enter_delay_ms,
+            )
+            .await?;
         } else {
             send_command_to_session(&args.session, &command).await?;
         }
@@ -269,37 +273,39 @@ async fn send_command_to_session(session: &str, command: &str) -> Result<()> {
     send_enter_key(session, "Enter").await
 }
 
-async fn send_keys_reliable(session: &str, text: &str, max_retries: u32) -> Result<()> {
+async fn send_keys_reliable(
+    session: &str,
+    text: &str,
+    retry_count: u32,
+    retry_delay_ms: u64,
+) -> Result<()> {
     send_literal_keys(session, text).await?;
     let mut baseline_hash = capture_target_hash(session).await?;
-    send_enter_key(session, "Enter").await?;
 
-    for delay in retry_enter_delays(max_retries) {
+    for delay in retry_enter_delays(retry_count, retry_delay_ms) {
+        send_enter_key(session, "Enter").await?;
         sleep(delay).await;
-        let first_hash = capture_target_hash(session).await?;
-        if first_hash != baseline_hash {
+        let current_hash = capture_target_hash(session).await?;
+        if current_hash != baseline_hash {
             return Ok(());
         }
 
-        sleep(delay).await;
-        let second_hash = capture_target_hash(session).await?;
-        if second_hash != first_hash {
-            return Ok(());
-        }
-
-        send_enter_key(session, "C-m").await?;
-        baseline_hash = second_hash;
+        baseline_hash = current_hash;
     }
 
     Ok(())
 }
 
-fn retry_enter_delays(max_retries: u32) -> Vec<Duration> {
-    RETRY_ENTER_DELAYS_MS
-        .iter()
-        .copied()
-        .take(max_retries as usize)
-        .map(Duration::from_millis)
+fn retry_enter_delays(retry_count: u32, retry_delay_ms: u64) -> Vec<Duration> {
+    let base_delay = retry_delay_ms.max(1);
+    let mut next_delay_ms = base_delay;
+
+    (0..=retry_count)
+        .map(|_| {
+            let delay = Duration::from_millis(next_delay_ms);
+            next_delay_ms = next_delay_ms.saturating_mul(2);
+            delay
+        })
         .collect()
 }
 
@@ -547,6 +553,8 @@ PR created #7",
             format: None,
             attach: false,
             retry_enter: true,
+            retry_enter_count: crate::cli::DEFAULT_RETRY_ENTER_COUNT,
+            retry_enter_delay_ms: crate::cli::DEFAULT_RETRY_ENTER_DELAY_MS,
             shell: None,
             command: vec![
                 "zsh".into(),
@@ -574,6 +582,8 @@ PR created #7",
             format: None,
             attach: false,
             retry_enter: true,
+            retry_enter_count: crate::cli::DEFAULT_RETRY_ENTER_COUNT,
+            retry_enter_delay_ms: crate::cli::DEFAULT_RETRY_ENTER_DELAY_MS,
             shell: Some("/bin/zsh".into()),
             command: vec!["source ~/.zshrc && omx --madmax".into()],
         };
@@ -597,6 +607,8 @@ PR created #7",
             format: None,
             attach: false,
             retry_enter: true,
+            retry_enter_count: crate::cli::DEFAULT_RETRY_ENTER_COUNT,
+            retry_enter_delay_ms: crate::cli::DEFAULT_RETRY_ENTER_DELAY_MS,
             shell: None,
             command: vec!["source ~/.zshrc && omx --madmax".into()],
         };
@@ -683,16 +695,35 @@ PR created #7",
 
     #[test]
     fn retry_enter_delays_respect_requested_backoff_limit() {
+        assert_eq!(retry_enter_delays(0, 250), vec![Duration::from_millis(250)]);
         assert_eq!(
-            retry_enter_delays(2),
-            vec![Duration::from_millis(500), Duration::from_millis(1_000)]
+            retry_enter_delays(2, 250),
+            vec![
+                Duration::from_millis(250),
+                Duration::from_millis(500),
+                Duration::from_millis(1_000)
+            ]
         );
         assert_eq!(
-            retry_enter_delays(5),
+            retry_enter_delays(4, 250),
             vec![
+                Duration::from_millis(250),
                 Duration::from_millis(500),
                 Duration::from_millis(1_000),
-                Duration::from_millis(2_000)
+                Duration::from_millis(2_000),
+                Duration::from_millis(4_000)
+            ]
+        );
+    }
+
+    #[test]
+    fn retry_enter_delays_clamp_zero_delay_to_one_millisecond() {
+        assert_eq!(
+            retry_enter_delays(2, 0),
+            vec![
+                Duration::from_millis(1),
+                Duration::from_millis(2),
+                Duration::from_millis(4)
             ]
         );
     }

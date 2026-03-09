@@ -6,6 +6,9 @@ use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 
 use crate::events::MessageFormat;
 
+pub const DEFAULT_RETRY_ENTER_COUNT: u32 = 4;
+pub const DEFAULT_RETRY_ENTER_DELAY_MS: u64 = 250;
+
 #[derive(Debug, Parser)]
 #[command(
     name = "clawhip",
@@ -336,6 +339,10 @@ pub struct TmuxNewArgs {
     pub attach: bool,
     #[arg(long, default_value_t = true, action = ArgAction::Set)]
     pub retry_enter: bool,
+    #[arg(long, default_value_t = DEFAULT_RETRY_ENTER_COUNT)]
+    pub retry_enter_count: u32,
+    #[arg(long, default_value_t = DEFAULT_RETRY_ENTER_DELAY_MS)]
+    pub retry_enter_delay_ms: u64,
     #[arg(long)]
     pub shell: Option<String>,
     #[arg(last = true, allow_hyphen_values = true)]
@@ -601,6 +608,39 @@ mod tests {
 
         assert_eq!(args.session, "issue-22");
         assert!(!args.retry_enter);
+        assert_eq!(args.retry_enter_count, DEFAULT_RETRY_ENTER_COUNT);
+        assert_eq!(args.retry_enter_delay_ms, DEFAULT_RETRY_ENTER_DELAY_MS);
+        assert_eq!(args.command, vec!["codex"]);
+    }
+
+    #[test]
+    fn parses_tmux_new_with_retry_enter_backoff_overrides() {
+        let cli = Cli::parse_from([
+            "clawhip",
+            "tmux",
+            "new",
+            "-s",
+            "issue-22",
+            "--retry-enter-count",
+            "6",
+            "--retry-enter-delay-ms",
+            "400",
+            "--",
+            "codex",
+        ]);
+
+        let Commands::Tmux { command } = cli.command.expect("tmux command") else {
+            panic!("expected tmux command");
+        };
+
+        let TmuxCommands::New(args) = command else {
+            panic!("expected tmux new command");
+        };
+
+        assert_eq!(args.session, "issue-22");
+        assert!(args.retry_enter);
+        assert_eq!(args.retry_enter_count, 6);
+        assert_eq!(args.retry_enter_delay_ms, 400);
         assert_eq!(args.command, vec!["codex"]);
     }
 
