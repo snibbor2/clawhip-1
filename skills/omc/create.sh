@@ -1,13 +1,14 @@
 #!/bin/bash
 # clawhip × OMC — Create a monitored OMC tmux session
-# Usage: create.sh <session-name> <worktree-path> [channel-id] [mention]
+# Usage: create.sh <session-name> <worktree-path> [prompt] [channel-id] [mention]
 
 set -euo pipefail
 
-SESSION="${1:?Usage: $0 <session-name> <worktree-path> [channel-id] [mention]}"
-WORKDIR="${2:?Usage: $0 <session-name> <worktree-path> [channel-id] [mention]}"
-CHANNEL="${3:-}"
-MENTION="${4:-}"
+SESSION="${1:?Usage: $0 <session-name> <worktree-path> [prompt] [channel-id] [mention]}"
+WORKDIR="${2:?Usage: $0 <session-name> <worktree-path> [prompt] [channel-id] [mention]}"
+PROMPT="${3:-}"
+CHANNEL="${4:-}"
+MENTION="${5:-}"
 
 KEYWORDS="${CLAWHIP_OMC_KEYWORDS:-error,Error,FAILED,PR created,panic,complete}"
 STALE_MIN="${CLAWHIP_OMC_STALE_MIN:-30}"
@@ -84,3 +85,10 @@ echo "✓ Created session: $SESSION in $WORKDIR (clawhip monitored)"
 echo "  Project: $PROJECT"
 echo "  Monitor: tmux attach -t $SESSION"
 echo "  Tail:    $(dirname "$0")/tail.sh $SESSION"
+
+if [ -n "$PROMPT" ]; then
+  sleep 10
+  tmux send-keys -t "$SESSION" -l "$PROMPT"
+  tmux send-keys -t "$SESSION" Enter
+  echo "  Prompt: sent literal text after 10s init delay"
+fi

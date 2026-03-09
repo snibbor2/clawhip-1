@@ -20,24 +20,29 @@ Launch [OMX](https://github.com/Yeachan-Heo/oh-my-codex) coding sessions with au
 ### Create a session
 
 ```bash
-./create.sh <session-name> <worktree-path> [channel-id] [mention]
+./create.sh <session-name> <worktree-path> [prompt] [channel-id] [mention]
 ```
 
 ```bash
 # Basic — uses clawhip default channel
 ./create.sh issue-123 ~/my-project/worktrees/issue-123
 
-# With specific channel and mention
-./create.sh issue-123 ~/my-project/worktrees/issue-123 1234567890 "<@user-id>"
+# Start a session and auto-send an initial prompt after the TUI initializes
+./create.sh issue-123 ~/my-project/worktrees/issue-123 "Fix the bug in src/main.rs and create a PR to dev"
+
+# With prompt, specific channel, and mention
+./create.sh issue-123 ~/my-project/worktrees/issue-123 "Fix the bug in src/main.rs and create a PR to dev" 1234567890 "<@user-id>"
 ```
 
-`create.sh` now emits lifecycle notifications directly from the OMX shell session, so you no longer need a separate lifecycle watcher command.
+`create.sh` now emits lifecycle notifications directly from the OMX shell session, so you no longer need a separate lifecycle watcher command. If you pass a prompt, the script waits 10 seconds for the TUI to initialize, then sends the prompt via `tmux send-keys -l` before pressing Enter.
 
 ### Send a prompt
 
 ```bash
 ./prompt.sh <session-name> "Fix the bug in src/main.rs and create a PR to dev"
 ```
+
+`prompt.sh` sends prompt text in tmux literal mode (`send-keys -l`) and presses Enter separately so quotes, punctuation, and leading dashes are preserved exactly.
 
 ### Monitor output
 
