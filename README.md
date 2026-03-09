@@ -144,6 +144,24 @@ token = "your-dedicated-clawhip-bot-token"
 default_channel = "your-default-channel-id"
 ```
 
+## Discord webhook setup
+
+Webhook mode works without a bot token.
+
+Quick start:
+
+```bash
+clawhip setup --webhook "https://discord.com/api/webhooks/..."
+```
+
+Route example:
+
+```toml
+[[routes]]
+event = "tmux.keyword"
+webhook = "https://discord.com/api/webhooks/..."
+```
+
 ## System model
 
 ```text

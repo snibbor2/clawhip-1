@@ -6,6 +6,19 @@ use crate::discord::DiscordClient;
 use crate::dynamic_tokens;
 use crate::events::{IncomingEvent, MessageFormat};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeliveryTarget {
+    Channel(String),
+    Webhook(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeliveryPreview {
+    pub target: DeliveryTarget,
+    pub format: MessageFormat,
+    pub content: String,
+}
+
 pub struct Router {
     config: Arc<AppConfig>,
 }
@@ -16,18 +29,13 @@ impl Router {
     }
 
     pub async fn dispatch(&self, event: &IncomingEvent, discord: &DiscordClient) -> Result<()> {
-        let (channel, _format, content) = self.preview(event).await?;
-        discord.send_message(&channel, &content).await
+        let delivery = self.preview_delivery(event).await?;
+        discord.send(&delivery.target, &delivery.content).await
     }
 
-    pub async fn preview(&self, event: &IncomingEvent) -> Result<(String, MessageFormat, String)> {
+    pub async fn preview_delivery(&self, event: &IncomingEvent) -> Result<DeliveryPreview> {
         let route = self.route_for(event);
-        let channel = event
-            .channel
-            .clone()
-            .or_else(|| route.and_then(|route| route.channel.clone()))
-            .or_else(|| self.config.defaults.channel.clone())
-            .ok_or_else(|| format!("no channel configured for event {}", event.canonical_kind()))?;
+        let target = self.target_for(event, route)?;
         let format = event
             .format
             .clone()
@@ -62,7 +70,23 @@ impl Router {
             }
             _ => content,
         };
-        Ok((channel, format, content))
+
+        Ok(DeliveryPreview {
+            target,
+            format,
+            content,
+        })
+    }
+
+    #[cfg(test)]
+    pub async fn preview(&self, event: &IncomingEvent) -> Result<(String, MessageFormat, String)> {
+        let delivery = self.preview_delivery(event).await?;
+        match delivery.target {
+            DeliveryTarget::Channel(channel) => Ok((channel, delivery.format, delivery.content)),
+            DeliveryTarget::Webhook(_) => {
+                Err("matched route uses a Discord webhook instead of a channel".into())
+            }
+        }
     }
 
     fn allow_dynamic_tokens_for(&self, event: &IncomingEvent, route: Option<&RouteRule>) -> bool {
@@ -95,6 +119,29 @@ impl Router {
                         .unwrap_or(false)
                 })
         })
+    }
+
+    fn target_for(
+        &self,
+        event: &IncomingEvent,
+        route: Option<&RouteRule>,
+    ) -> Result<DeliveryTarget> {
+        if let Some(webhook) = route
+            .and_then(|route| route.webhook.as_deref())
+            .map(str::trim)
+            .filter(|webhook| !webhook.is_empty())
+        {
+            return Ok(DeliveryTarget::Webhook(webhook.to_string()));
+        }
+
+        let channel = event
+            .channel
+            .clone()
+            .or_else(|| route.and_then(|route| route.channel.clone()))
+            .or_else(|| self.config.defaults.channel.clone())
+            .ok_or_else(|| format!("no channel configured for event {}", event.canonical_kind()))?;
+
+        Ok(DeliveryTarget::Channel(channel))
     }
 }
 
@@ -167,6 +214,7 @@ mod tests {
                     .into_iter()
                     .collect(),
                 channel: Some("route".into()),
+                webhook: None,
                 mention: None,
                 allow_dynamic_tokens: false,
                 format: Some(MessageFormat::Alert),
@@ -198,6 +246,7 @@ mod tests {
                 event: "custom".into(),
                 filter: Default::default(),
                 channel: Some("route".into()),
+                webhook: None,
                 mention: Some("<@1465264645320474637>".into()),
                 allow_dynamic_tokens: false,
                 format: Some(MessageFormat::Compact),
@@ -226,6 +275,7 @@ mod tests {
                         .into_iter()
                         .collect(),
                     channel: Some("gh-route".into()),
+                    webhook: None,
                     mention: Some("<@botid>".into()),
                     allow_dynamic_tokens: false,
                     format: Some(MessageFormat::Alert),
@@ -237,6 +287,7 @@ mod tests {
                         .into_iter()
                         .collect(),
                     channel: Some("tmux-route".into()),
+                    webhook: None,
                     mention: Some("<@botid>".into()),
                     allow_dynamic_tokens: false,
                     format: Some(MessageFormat::Alert),
@@ -271,6 +322,7 @@ mod tests {
                 event: "tmux.*".into(),
                 filter: Default::default(),
                 channel: Some("dynamic-route".into()),
+                webhook: None,
                 mention: None,
                 allow_dynamic_tokens: true,
                 format: None,
@@ -295,6 +347,7 @@ mod tests {
                 event: "tmux.*".into(),
                 filter: Default::default(),
                 channel: Some("dynamic-route".into()),
+                webhook: None,
                 mention: None,
                 allow_dynamic_tokens: true,
                 format: None,
@@ -321,6 +374,7 @@ mod tests {
                     .into_iter()
                     .collect(),
                 channel: Some("tmux-route".into()),
+                webhook: None,
                 mention: None,
                 allow_dynamic_tokens: false,
                 format: Some(MessageFormat::Alert),
@@ -351,6 +405,7 @@ mod tests {
                 event: "tmux.*".into(),
                 filter: Default::default(),
                 channel: Some("tmux-route".into()),
+                webhook: None,
                 mention: Some("<@route>".into()),
                 allow_dynamic_tokens: false,
                 format: Some(MessageFormat::Compact),
@@ -381,6 +436,7 @@ mod tests {
                     .into_iter()
                     .collect(),
                 channel: Some("route-channel".into()),
+                webhook: None,
                 mention: Some("<@route>".into()),
                 allow_dynamic_tokens: false,
                 format: Some(MessageFormat::Compact),
@@ -415,6 +471,7 @@ mod tests {
                     .into_iter()
                     .collect(),
                 channel: Some("agent-route".into()),
+                webhook: None,
                 mention: None,
                 allow_dynamic_tokens: false,
                 format: Some(MessageFormat::Alert),
@@ -472,6 +529,7 @@ mod tests {
                         .into_iter()
                         .collect(),
                     channel: Some("repo-a".into()),
+                    webhook: None,
                     mention: None,
                     allow_dynamic_tokens: false,
                     format: None,
@@ -483,6 +541,7 @@ mod tests {
                         .into_iter()
                         .collect(),
                     channel: Some("repo-b".into()),
+                    webhook: None,
                     mention: None,
                     allow_dynamic_tokens: false,
                     format: None,
@@ -495,5 +554,70 @@ mod tests {
         let event = IncomingEvent::github_issue_opened("clawhip".into(), 7, "bug".into(), None);
         let (channel, _, _) = router.preview(&event).await.unwrap();
         assert_eq!(channel, "repo-b");
+    }
+
+    #[tokio::test]
+    async fn webhook_route_is_used_as_delivery_target() {
+        let config = AppConfig {
+            defaults: DefaultsConfig {
+                channel: Some("default".into()),
+                format: MessageFormat::Compact,
+            },
+            routes: vec![RouteRule {
+                event: "tmux.keyword".into(),
+                filter: Default::default(),
+                channel: None,
+                webhook: Some("https://discord.com/api/webhooks/123/abc".into()),
+                mention: None,
+                allow_dynamic_tokens: false,
+                format: None,
+                template: None,
+            }],
+            ..AppConfig::default()
+        };
+        let router = Router::new(Arc::new(config));
+        let event =
+            IncomingEvent::tmux_keyword("issue-25".into(), "error".into(), "boom".into(), None);
+
+        let delivery = router.preview_delivery(&event).await.unwrap();
+        assert_eq!(
+            delivery.target,
+            DeliveryTarget::Webhook("https://discord.com/api/webhooks/123/abc".into())
+        );
+        assert!(delivery.content.contains("boom"));
+    }
+
+    #[tokio::test]
+    async fn webhook_route_takes_precedence_over_event_channel() {
+        let config = AppConfig {
+            defaults: DefaultsConfig {
+                channel: Some("default".into()),
+                format: MessageFormat::Compact,
+            },
+            routes: vec![RouteRule {
+                event: "tmux.keyword".into(),
+                filter: Default::default(),
+                channel: None,
+                webhook: Some("https://discord.com/api/webhooks/123/abc".into()),
+                mention: None,
+                allow_dynamic_tokens: false,
+                format: None,
+                template: None,
+            }],
+            ..AppConfig::default()
+        };
+        let router = Router::new(Arc::new(config));
+        let event = IncomingEvent::tmux_keyword(
+            "issue-25".into(),
+            "error".into(),
+            "boom".into(),
+            Some("explicit-channel".into()),
+        );
+
+        let delivery = router.preview_delivery(&event).await.unwrap();
+        assert_eq!(
+            delivery.target,
+            DeliveryTarget::Webhook("https://discord.com/api/webhooks/123/abc".into())
+        );
     }
 }

@@ -54,6 +54,14 @@ async fn real_main() -> Result<()> {
             let event = args.into_event()?;
             client.send_event(&event).await
         }
+        Commands::Setup { webhook } => {
+            let mut editable = AppConfig::load_or_default(&config_path)?;
+            editable.scaffold_webhook_quickstart(webhook);
+            editable.validate()?;
+            editable.save(&config_path)?;
+            println!("Saved {}", config_path.display());
+            Ok(())
+        }
         Commands::Send { channel, message } => {
             let client = DaemonClient::from_config(config.as_ref());
             client

@@ -489,8 +489,8 @@ async fn dispatch_event(
         }
         _ => event.clone(),
     };
-    let (channel, _format, content) = router.preview(&event).await?;
-    discord.send_message(&channel, &content).await
+    let delivery = router.preview_delivery(&event).await?;
+    discord.send(&delivery.target, &delivery.content).await
 }
 
 async fn snapshot_git_repo(repo: &GitRepoMonitor) -> Result<GitSnapshot> {
@@ -929,6 +929,7 @@ mod tests {
                     .into_iter()
                     .collect(),
                 channel: Some("route-channel".into()),
+                webhook: None,
                 mention: Some("<@1465264645320474637>".into()),
                 allow_dynamic_tokens: false,
                 format: Some(MessageFormat::Alert),

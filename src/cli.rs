@@ -39,6 +39,11 @@ pub enum Commands {
     },
     /// Check daemon health/status.
     Status,
+    /// Scaffold a quick-start configuration.
+    Setup {
+        #[arg(long)]
+        webhook: String,
+    },
     /// Send a custom event to the local daemon.
     Send {
         #[arg(long)]
@@ -555,6 +560,22 @@ mod tests {
         assert_eq!(args.stale_minutes, 15);
         assert!(args.retry_enter);
         assert!(matches!(args.format, Some(TmuxWrapperFormat::Alert)));
+    }
+
+    #[test]
+    fn parses_setup_webhook_subcommand() {
+        let cli = Cli::parse_from([
+            "clawhip",
+            "setup",
+            "--webhook",
+            "https://discord.com/api/webhooks/123/abc",
+        ]);
+
+        let Commands::Setup { webhook } = cli.command.expect("setup command") else {
+            panic!("expected setup command");
+        };
+
+        assert_eq!(webhook, "https://discord.com/api/webhooks/123/abc");
     }
 
     #[test]

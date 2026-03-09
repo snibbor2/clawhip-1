@@ -101,6 +101,32 @@ installed_binary_path() {
   return 1
 }
 
+setup_quick_start() {
+  local binary_path
+  binary_path="$(installed_binary_path)" || return 0
+
+  local config_path="$HOME/.clawhip/config.toml"
+  if [[ -f "$config_path" ]]; then
+    log "existing config found at $config_path; skipping quick-start scaffold"
+    return 0
+  fi
+
+  local webhook_url="${CLAWHIP_WEBHOOK_URL:-}"
+  if [[ -z "${webhook_url// }" && -t 0 ]]; then
+    printf '[clawhip] Discord webhook URL (recommended quick start; press Enter to skip): '
+    read -r webhook_url || true
+  fi
+
+  if [[ -n "${webhook_url// }" ]]; then
+    log "scaffolding webhook quick-start config"
+    "$binary_path" setup --webhook "$webhook_url"
+    log "webhook config scaffolded at $config_path"
+  else
+    log "recommended quick start: clawhip setup --webhook 'https://discord.com/api/webhooks/...'"
+    log "bot-token mode is still supported via ~/.clawhip/config.toml"
+  fi
+}
+
 install_systemd_binary() {
   local binary_path
   binary_path="$(installed_binary_path)" || {
@@ -127,6 +153,7 @@ mkdir -p "$HOME/.clawhip"
 log "ensured config dir $HOME/.clawhip"
 sync_plugins
 log "next: read SKILL.md and attach the skill surface"
+setup_quick_start
 
 if [[ "$SYSTEMD" == "1" ]]; then
   install_systemd_binary

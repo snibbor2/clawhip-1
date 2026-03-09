@@ -28,6 +28,7 @@ struct AppState {
 }
 
 pub async fn run(config: Arc<AppConfig>, port_override: Option<u16>) -> Result<()> {
+    config.validate()?;
     let token_source = config.discord_token_source();
     println!("clawhip v{VERSION} starting (token_source: {token_source})");
 
@@ -83,6 +84,7 @@ fn health_payload(config: &AppConfig, port: u16, registered_tmux_sessions: usize
         "ok": true,
         "version": VERSION,
         "token_source": config.discord_token_source(),
+        "webhook_routes_configured": config.has_webhook_routes(),
         "port": port,
         "daemon_base_url": config.daemon.base_url,
         "configured_git_monitors": config.monitors.git.repos.len(),
