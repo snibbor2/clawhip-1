@@ -9,7 +9,7 @@
   <a href="https://github.com/Yeachan-Heo/clawhip/stargazers"><img src="https://img.shields.io/github/stars/Yeachan-Heo/clawhip?style=social" alt="GitHub stars" /></a>
 </p>
 
-> **⭐ Star this repo before using clawhip.** The installer will star it automatically if you have `gh` CLI authenticated.
+> **⭐ Optional support:** the interactive repo-local install paths (`./install.sh` and `clawhip install` from a clone) can offer to star this repo after a successful install when `gh` is installed and authenticated. Skip it with `--skip-star-prompt` or `CLAWHIP_SKIP_STAR_PROMPT=1`.
 
 clawhip is a daemon-first Discord notification router with a typed event pipeline, extracted sources, and a clean renderer/sink split.
 
@@ -27,15 +27,15 @@ Then OpenClaw should:
 - start the daemon
 - run live verification for issue / PR / git / tmux / install flows
 
-## What shipped in v0.3.0
+## What shipped in v0.4.0
 
-- **Typed event model** — incoming events are normalized and validated into typed envelopes before dispatch.
-- **Multi-delivery router** — one event can resolve to zero, one, or many deliveries instead of stopping at the first match.
-- **Source extraction** — git, GitHub, and tmux monitoring now run as explicit sources feeding the daemon queue.
-- **Sink/render split** — rendering is separated from transport; v0.3.0 ships with the Discord sink and default renderer.
-- **Config compatibility** — `[providers.discord]` is the preferred config surface, while legacy `[discord]` still loads.
+- **Install lifecycle polish** — repo-local installs, `clawhip install`, `clawhip update`, and `clawhip uninstall` are documented and aligned for clone-local operator workflows.
+- **Optional GitHub support prompt** — interactive install flows can offer an explicit opt-in GitHub star prompt, with `--skip-star-prompt` and `CLAWHIP_SKIP_STAR_PROMPT=1` available on both installer surfaces.
+- **Filesystem memory scaffolds** — `clawhip memory init` and `clawhip memory status` bootstrap and inspect the filesystem-offloaded memory layout for repos and workspaces.
+- **Native session contract polish** — OMC/OMX payload normalization now prefers the lower-noise `session.*` route family while keeping legacy `agent.*` compatibility.
+- **Config compatibility** — `[providers.discord]` remains the preferred config surface, while legacy `[discord]` still loads.
 
-See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the release architecture that ships in v0.3.0.
+See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the release architecture that ships in v0.4.0.
 
 ## Good to use together
 
@@ -60,6 +60,7 @@ clawhip tmux watch -s issue-123 \
 ```
 
 See [`skills/omx/`](skills/omx/) for ready-to-use scripts.
+Native OMC/OMX routing now prefers the normalized [`session.*` contract](docs/native-event-contract.md); legacy `agent.*` wrapper emits remain supported for compatibility.
 
 ### [OMC (oh-my-claudecode)](https://github.com/Yeachan-Heo/oh-my-claudecode)
 
@@ -74,6 +75,7 @@ clawhip tmux new -s issue-456 \
 ```
 
 See [`skills/omc/`](skills/omc/) for ready-to-use scripts.
+Direct Slack/Discord notifications inside OMC/OMX should be treated as deprecated; emit native events and let clawhip own routing, mention policy, and formatting.
 
 ## Recipes
 
@@ -139,6 +141,38 @@ Operational notes:
 - mention your Clawdbot/OpenClaw bot user so the bot actually wakes up and acts
 - use plain operational language like "check open PRs/issues", "review blockers", and "continue stalled work"
 - this keeps scheduling outside the agent loop: cron handles timing, clawhip handles delivery, Discord handles the handoff
+
+## Filesystem-offloaded memory pattern
+
+clawhip now documents a Claw OS-style memory pattern where `MEMORY.md` is the hot pointer/index layer and detailed memory lives in structured filesystem shards under `memory/`.
+
+Use this when you want:
+
+- a small, fast memory surface for agents
+- durable project/channel/daily memory in files
+- explicit read/write routing instead of one giant note
+- ongoing memory refactoring as part of operations
+
+Start here:
+
+- [docs/memory-offload-architecture.md](docs/memory-offload-architecture.md)
+- [docs/memory-offload-guide.md](docs/memory-offload-guide.md)
+- [docs/examples/MEMORY.example.md](docs/examples/MEMORY.example.md)
+- [skills/memory-offload/SKILL.md](skills/memory-offload/SKILL.md)
+
+Runtime support now includes a small bootstrap/inspection surface:
+
+```bash
+# create a scaffold in the current repo
+clawhip memory init --project clawhip --channel discord-alerts --agent codex
+
+# inspect whether the expected files and directories exist
+clawhip memory status --project clawhip --channel discord-alerts --agent codex
+```
+
+`clawhip memory init` creates `MEMORY.md`, `memory/README.md`, a daily shard, a project shard,
+topic files, and optional channel/agent shards without overwriting existing files unless you pass
+`--force`.
 
 ## Plugin architecture
 
@@ -276,7 +310,7 @@ format = "alert"
               -> [Discord REST / Slack webhook delivery]
 ```
 
-Input sources in v0.3.0:
+Input sources in v0.4.0:
 - CLI thin clients and custom events
 - GitHub webhook ingress plus GitHub polling source
 - git monitor source
@@ -389,7 +423,54 @@ Verification:
 - create real empty commit in monitored repo
 - confirm final Discord body contains commit summary and mention
 
-### 7. Agent lifecycle preset family
+### 7. Native OMC / OMX session contract
+
+Canonical native routing for OMC/OMX uses `session.*` events after clawhip normalization.
+
+Accepted upstream inputs:
+- legacy wrapper emits like `agent.started` / `agent.finished` / `agent.failed`
+- OMC command/HTTP payloads with `signal.routeKey`
+- OMX hook payloads with `context.normalized_event`
+
+Canonical normalized events:
+- `session.started`
+- `session.blocked`
+- `session.finished`
+- `session.failed`
+- `session.retry-needed`
+- `session.pr-created`
+- `session.test-started`
+- `session.test-finished`
+- `session.test-failed`
+- `session.handoff-needed`
+
+Normalized metadata (when upstream provides it):
+- `tool`
+- `session_name`
+- `session_id`
+- `repo_name`
+- `repo_path`
+- `worktree_path`
+- `branch`
+- `issue_number`
+- `pr_number`
+- `pr_url`
+- `command`
+- `tool_name`
+- `test_runner`
+- `summary`
+- `error_message`
+- `event_timestamp`
+
+Route guidance:
+- prefer `session.*` for new native OMC/OMX routes
+- `agent.*` remains supported for clawhip-local wrapper compatibility
+- `agent.started|blocked|finished|failed` and `session.started|blocked|finished|failed` cross-match in routing for backward compatibility
+- prefer route filters like `tool`, `repo_name`, `session_name`, `issue_number`, and `branch` over brittle message parsing
+
+See [`docs/native-event-contract.md`](docs/native-event-contract.md) for the full normalization/deprecation notes.
+
+### 8. Agent lifecycle preset family
 
 Input:
 ```bash
@@ -411,7 +492,7 @@ Verification:
 - confirm final Discord body contains agent name and lifecycle state
 - confirm `agent.*` route rules match each event type
 
-### 8. tmux keyword preset
+### 9. tmux keyword preset
 
 Input:
 - built-in tmux monitor detects configured keyword
@@ -426,7 +507,7 @@ Verification:
 - print configured keyword in real monitored tmux session
 - confirm final Discord body in target channel
 
-### 9. tmux stale preset
+### 10. tmux stale preset
 
 Input:
 - built-in tmux stale detection
@@ -441,7 +522,7 @@ Verification:
 - let real tmux session idle past threshold
 - confirm final Discord body in target channel
 
-### 10. tmux wrapper / watch preset
+### 11. tmux wrapper / watch preset
 
 Input:
 ```bash
@@ -479,7 +560,7 @@ Verification:
 - emit keyword in pane
 - confirm Discord message body and mention
 
-### 11. install lifecycle preset
+### 12. install lifecycle preset
 
 Input:
 ```bash
@@ -493,6 +574,7 @@ Behavior:
 - install binary from git clone
 - ensure config dir exists
 - optional systemd install
+- optional post-install GitHub star prompt on interactive local installs
 - update rebuilds/reinstalls and optionally restarts daemon
 - uninstall removes runtime artifacts
 
@@ -519,6 +601,18 @@ Verification:
 - `agent.finished`
 - `agent.failed`
 
+### Native session family
+- `session.started`
+- `session.blocked`
+- `session.finished`
+- `session.failed`
+- `session.retry-needed`
+- `session.pr-created`
+- `session.test-started`
+- `session.test-finished`
+- `session.test-failed`
+- `session.handoff-needed`
+
 ### tmux family
 - `tmux.keyword`
 - `tmux.stale`
@@ -540,6 +634,14 @@ filter = { repo = "clawhip" }
 sink = "discord"
 channel = "1480171113253175356"
 mention = "<@1465264645320474637>"
+format = "compact"
+allow_dynamic_tokens = false
+
+[[routes]]
+event = "session.*"
+filter = { tool = "omx", repo_name = "clawhip" }
+sink = "discord"
+channel = "1480171113253175356"
 format = "compact"
 allow_dynamic_tokens = false
 
@@ -614,15 +716,20 @@ Release artifacts are generated for these Rust target triples: `x86_64-unknown-l
 
 `install.sh` now tries the latest prebuilt release first and falls back to `cargo install --path . --force` when a matching release asset is unavailable. If Cargo is needed for the fallback path but not installed, the script prints Rustup setup instructions. When `--systemd` is used, the installed binary is also copied to `/usr/local/bin/clawhip` so the bundled service unit can start it.
 
+In interactive terminals, both the repo-local installer and `clawhip install` may offer an optional post-install GitHub star prompt via authenticated `gh api` access. It never runs automatically, is skipped when `gh` is missing or unauthenticated, and can be disabled with `./install.sh --skip-star-prompt`, `clawhip install --skip-star-prompt`, or `CLAWHIP_SKIP_STAR_PROMPT=1`.
+
 ### Runtime lifecycle commands
 
 ```bash
 clawhip install
 clawhip install --systemd
+clawhip install --skip-star-prompt
 clawhip update --restart
 clawhip uninstall
 clawhip uninstall --remove-systemd --remove-config
 ```
+
+`clawhip install` now matches the repo-local installer's optional GitHub star prompt behavior: it only appears in interactive terminals, is skipped when `gh` is missing or unauthenticated, never stars automatically, and can be disabled with `clawhip install --skip-star-prompt` or `CLAWHIP_SKIP_STAR_PROMPT=1 clawhip install`.
 
 ## systemd contract
 

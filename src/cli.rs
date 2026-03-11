@@ -78,8 +78,12 @@ pub enum Commands {
     },
     /// Install clawhip from the current git clone.
     Install {
+        /// Install and start the bundled systemd service.
         #[arg(long, default_value_t = false)]
         systemd: bool,
+        /// Disable the optional post-install GitHub star prompt.
+        #[arg(long, default_value_t = false)]
+        skip_star_prompt: bool,
     },
     /// Update clawhip from the current git clone.
     Update {
@@ -102,6 +106,11 @@ pub enum Commands {
     Config {
         #[command(subcommand)]
         command: Option<ConfigCommand>,
+    },
+    /// Bootstrap and inspect filesystem-offloaded memory scaffolds.
+    Memory {
+        #[command(subcommand)]
+        command: MemoryCommands,
     },
 }
 
@@ -367,6 +376,55 @@ pub struct TmuxWatchArgs {
     pub retry_enter: bool,
 }
 
+#[derive(Debug, Clone, Subcommand)]
+pub enum MemoryCommands {
+    /// Create a filesystem-offloaded memory scaffold in a repo or workspace.
+    Init(MemoryInitArgs),
+    /// Inspect whether a filesystem-offloaded memory scaffold is present.
+    Status(MemoryStatusArgs),
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct MemoryInitArgs {
+    /// Root directory where MEMORY.md and memory/ should live.
+    #[arg(long)]
+    pub root: Option<PathBuf>,
+    /// Stable project slug for memory/projects/<project>.md.
+    #[arg(long)]
+    pub project: Option<String>,
+    /// Optional channel slug for memory/channels/<channel>.md.
+    #[arg(long)]
+    pub channel: Option<String>,
+    /// Optional agent slug for memory/agents/<agent>.md.
+    #[arg(long)]
+    pub agent: Option<String>,
+    /// Daily shard name to create under memory/daily/ (YYYY-MM-DD).
+    #[arg(long)]
+    pub date: Option<String>,
+    /// Overwrite generated scaffold files when they already exist.
+    #[arg(long, default_value_t = false)]
+    pub force: bool,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct MemoryStatusArgs {
+    /// Root directory where MEMORY.md and memory/ should live.
+    #[arg(long)]
+    pub root: Option<PathBuf>,
+    /// Stable project slug to inspect under memory/projects/<project>.md.
+    #[arg(long)]
+    pub project: Option<String>,
+    /// Optional channel slug to inspect under memory/channels/<channel>.md.
+    #[arg(long)]
+    pub channel: Option<String>,
+    /// Optional agent slug to inspect under memory/agents/<agent>.md.
+    #[arg(long)]
+    pub agent: Option<String>,
+    /// Daily shard name to inspect under memory/daily/ (YYYY-MM-DD).
+    #[arg(long)]
+    pub date: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, Subcommand)]
 pub enum ConfigCommand {
     #[default]
@@ -378,6 +436,7 @@ pub enum ConfigCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::event::compat::from_incoming_event;
 
     #[test]
     fn parses_emit_subcommand_with_top_level_fields() {
@@ -455,6 +514,32 @@ mod tests {
                 .to_string()
                 .contains("emit fields must be provided as --key value pairs")
         );
+    }
+
+    #[test]
+    fn emit_agent_lifecycle_events_normalize_for_validation() {
+        let args = EmitArgs {
+            event_type: "agent.started".into(),
+            fields: vec![
+                "--agent".into(),
+                "omx".into(),
+                "--session".into(),
+                "issue-65".into(),
+                "--project".into(),
+                "clawhip".into(),
+            ],
+        };
+
+        let normalized = crate::events::normalize_event(args.into_event().expect("event"));
+        let typed = from_incoming_event(&normalized).expect("typed envelope");
+
+        assert_eq!(normalized.kind, "agent.started");
+        assert_eq!(
+            normalized.payload["status"],
+            Value::String("started".into())
+        );
+        assert_eq!(normalized.payload["tool"], Value::String("omx".into()));
+        assert_eq!(typed.metadata.priority, crate::event::EventPriority::Normal);
     }
 
     #[test]
@@ -653,5 +738,85 @@ mod tests {
         };
 
         assert!(matches!(command, PluginCommands::List));
+    }
+
+    #[test]
+    fn parses_memory_init_subcommand() {
+        let cli = Cli::parse_from([
+            "clawhip",
+            "memory",
+            "init",
+            "--root",
+            "/tmp/workspace",
+            "--project",
+            "clawhip",
+            "--channel",
+            "discord-alerts",
+            "--agent",
+            "codex",
+            "--date",
+            "2026-03-10",
+            "--force",
+        ]);
+
+        let Commands::Memory { command } = cli.command.expect("memory command") else {
+            panic!("expected memory command");
+        };
+
+        let MemoryCommands::Init(args) = command else {
+            panic!("expected memory init command");
+        };
+
+        assert_eq!(args.root, Some(PathBuf::from("/tmp/workspace")));
+        assert_eq!(args.project.as_deref(), Some("clawhip"));
+        assert_eq!(args.channel.as_deref(), Some("discord-alerts"));
+        assert_eq!(args.agent.as_deref(), Some("codex"));
+        assert_eq!(args.date.as_deref(), Some("2026-03-10"));
+        assert!(args.force);
+    }
+
+    #[test]
+    fn parses_memory_status_subcommand() {
+        let cli = Cli::parse_from([
+            "clawhip",
+            "memory",
+            "status",
+            "--root",
+            "/tmp/workspace",
+            "--project",
+            "clawhip",
+            "--agent",
+            "codex",
+        ]);
+
+        let Commands::Memory { command } = cli.command.expect("memory command") else {
+            panic!("expected memory command");
+        };
+
+        let MemoryCommands::Status(args) = command else {
+            panic!("expected memory status command");
+        };
+
+        assert_eq!(args.root, Some(PathBuf::from("/tmp/workspace")));
+        assert_eq!(args.project.as_deref(), Some("clawhip"));
+        assert_eq!(args.channel, None);
+        assert_eq!(args.agent.as_deref(), Some("codex"));
+        assert_eq!(args.date, None);
+    }
+
+    #[test]
+    fn parses_install_subcommand_with_skip_star_prompt() {
+        let cli = Cli::parse_from(["clawhip", "install", "--systemd", "--skip-star-prompt"]);
+
+        let Commands::Install {
+            systemd,
+            skip_star_prompt,
+        } = cli.command.expect("install command")
+        else {
+            panic!("expected install command");
+        };
+
+        assert!(systemd);
+        assert!(skip_star_prompt);
     }
 }

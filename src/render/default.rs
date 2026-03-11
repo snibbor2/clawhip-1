@@ -11,6 +11,9 @@ pub struct DefaultRenderer;
 impl Renderer for DefaultRenderer {
     fn render(&self, event: &IncomingEvent, format: &MessageFormat) -> Result<String> {
         let payload = &event.payload;
+        if event.canonical_kind().starts_with("session.") {
+            return render_session_event(event.canonical_kind(), payload, format);
+        }
         if event.canonical_kind() == "git.commit"
             && let Some(rendered) = render_aggregated_git_commit(payload, format)?
         {
@@ -336,6 +339,113 @@ fn agent_detail_suffix(payload: &Value) -> String {
 fn agent_inline_suffix(payload: &Value) -> String {
     let mut parts = agent_context_parts(payload);
 
+    if let Some(summary) = optional_string_field(payload, "summary") {
+        parts.push(summary);
+    }
+    if let Some(error_message) = optional_string_field(payload, "error_message") {
+        parts.push(format!("error: {error_message}"));
+    }
+
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(" · {}", parts.join(" · "))
+    }
+}
+
+fn render_session_event(kind: &str, payload: &Value, format: &MessageFormat) -> Result<String> {
+    let label = session_subject(payload);
+    let status = session_status_label(kind, payload);
+    let detail = session_detail_suffix(payload);
+    let inline = session_inline_suffix(payload);
+    let prefix = agent_optional_mention_prefix(payload);
+
+    Ok(match format {
+        MessageFormat::Compact => format!("{prefix}{label} {status}{detail}"),
+        MessageFormat::Alert => format!("🚨 {prefix}{label} {status}{detail}"),
+        MessageFormat::Inline => format!("{prefix}[{label}] {status}{inline}"),
+        MessageFormat::Raw => serde_json::to_string_pretty(payload)?,
+    })
+}
+
+fn session_subject(payload: &Value) -> String {
+    let tool = optional_string_field(payload, "tool").unwrap_or_else(|| "session".to_string());
+    let session = optional_string_field(payload, "session_name")
+        .or_else(|| optional_string_field(payload, "session_id"));
+    match session {
+        Some(session) => format!("{tool} {session}"),
+        None => tool,
+    }
+}
+
+fn session_status_label(kind: &str, payload: &Value) -> String {
+    optional_string_field(payload, "status").unwrap_or_else(|| {
+        kind.strip_prefix("session.")
+            .unwrap_or(kind)
+            .replace('-', " ")
+    })
+}
+
+fn session_detail_suffix(payload: &Value) -> String {
+    let mut parts = Vec::new();
+
+    if let Some(repo_name) = optional_string_field(payload, "repo_name")
+        .or_else(|| optional_string_field(payload, "project"))
+    {
+        parts.push(format!("repo={repo_name}"));
+    }
+    if let Some(issue_number) = optional_u64_field(payload, "issue_number") {
+        parts.push(format!("issue=#{issue_number}"));
+    }
+    if let Some(pr_number) = optional_u64_field(payload, "pr_number") {
+        parts.push(format!("pr=#{pr_number}"));
+    }
+    if let Some(branch) = optional_string_field(payload, "branch") {
+        parts.push(format!("branch={branch}"));
+    }
+    if let Some(test_runner) = optional_string_field(payload, "test_runner") {
+        parts.push(format!("runner={test_runner}"));
+    }
+    if let Some(elapsed_secs) = optional_u64_field(payload, "elapsed_secs") {
+        parts.push(format!("elapsed={elapsed_secs}s"));
+    }
+    if let Some(summary) = optional_string_field(payload, "summary") {
+        parts.push(format!("summary={summary}"));
+    }
+    if let Some(error_message) = optional_string_field(payload, "error_message") {
+        parts.push(format!("error={error_message}"));
+    }
+
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", parts.join(", "))
+    }
+}
+
+fn session_inline_suffix(payload: &Value) -> String {
+    let mut parts = Vec::new();
+
+    if let Some(repo_name) = optional_string_field(payload, "repo_name")
+        .or_else(|| optional_string_field(payload, "project"))
+    {
+        parts.push(repo_name);
+    }
+    if let Some(issue_number) = optional_u64_field(payload, "issue_number") {
+        parts.push(format!("issue #{issue_number}"));
+    }
+    if let Some(pr_number) = optional_u64_field(payload, "pr_number") {
+        parts.push(format!("PR #{pr_number}"));
+    }
+    if let Some(branch) = optional_string_field(payload, "branch") {
+        parts.push(branch);
+    }
+    if let Some(test_runner) = optional_string_field(payload, "test_runner") {
+        parts.push(test_runner);
+    }
+    if let Some(elapsed_secs) = optional_u64_field(payload, "elapsed_secs") {
+        parts.push(format!("{elapsed_secs}s"));
+    }
     if let Some(summary) = optional_string_field(payload, "summary") {
         parts.push(summary);
     }

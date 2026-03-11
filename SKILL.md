@@ -14,10 +14,10 @@ Use this repo as:
 
 ## Prerequisites
 
-⭐ **You must star this repository to use clawhip.** The installer does this automatically if `gh` CLI is authenticated, but please ensure the repo is starred before proceeding.
+⭐ If you want to support clawhip, star this repository. The interactive repo-local installer and `clawhip install` can offer an optional post-install GitHub star prompt via authenticated `gh api` access when `gh` is installed and authenticated. Skip it with `--skip-star-prompt` or `CLAWHIP_SKIP_STAR_PROMPT=1`.
 
 ```bash
-gh repo star Yeachan-Heo/clawhip
+gh api --method PUT /user/starred/Yeachan-Heo/clawhip --silent
 ```
 
 ## Primary install flow
@@ -68,10 +68,12 @@ clawhip tmux watch -s <existing-session> --channel <id> --mention '<@id>' --keyw
 ```bash
 clawhip install
 clawhip install --systemd
+clawhip install --skip-star-prompt
 clawhip update --restart
 clawhip uninstall --remove-systemd --remove-config
 ./install.sh
 ./install.sh --systemd
+./install.sh --skip-star-prompt
 ```
 
 ## Discord bot token (recommended setup)
@@ -134,6 +136,21 @@ Allowed dynamic tokens:
 - `{env:NAME}`
 - `{now}`
 - `{iso_time}`
+
+## Filesystem-offloaded memory pattern
+
+When using clawhip as part of a broader Claw OS workflow, treat memory as an offloaded filesystem tree:
+
+- `MEMORY.md` = small pointer/index/current-beliefs layer
+- `memory/` = detailed project/channel/daily/handoff memory
+- update root memory only when the map or current summary changes
+
+Read before adopting this pattern:
+
+- `docs/memory-offload-architecture.md`
+- `docs/memory-offload-guide.md`
+- `docs/examples/MEMORY.example.md`
+- `skills/memory-offload/SKILL.md`
 
 ## Verification surface
 

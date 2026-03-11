@@ -4,10 +4,12 @@ Launch [OMX](https://github.com/Yeachan-Heo/oh-my-codex) coding sessions with au
 
 ## What you get
 
-- Native `agent.started`, `agent.finished`, and `agent.failed` lifecycle events via `clawhip emit`
+- Legacy-compatible `agent.started`, `agent.finished`, and `agent.failed` wrapper emits via `clawhip emit`
+- clawhip-side normalization of richer native OMC/OMX events into the canonical `session.*` routing contract
 - Session keyword alerts (error, PR created, complete, etc.)
 - Stale session detection (no output for N minutes)
 - All notifications routed to the correct Discord channel
+- Direct Slack/Discord notifications inside OMC/OMX should be treated as deprecated in clawhip-integrated setups
 
 ## Prerequisites
 

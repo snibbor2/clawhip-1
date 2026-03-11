@@ -74,10 +74,12 @@ fn body_for(kind: &str, payload: &Value) -> Result<EventBody> {
             minutes: u64_field(payload, "minutes")?,
             last_line: string_field(payload, "last_line")?,
         })),
-        "agent.started" => Ok(EventBody::AgentStarted(agent_event(payload)?)),
-        "agent.blocked" => Ok(EventBody::AgentBlocked(agent_event(payload)?)),
-        "agent.finished" => Ok(EventBody::AgentFinished(agent_event(payload)?)),
-        "agent.failed" => Ok(EventBody::AgentFailed(agent_event(payload)?)),
+        "agent.started" | "session.started" => Ok(EventBody::AgentStarted(agent_event(payload)?)),
+        "agent.blocked" | "session.blocked" => Ok(EventBody::AgentBlocked(agent_event(payload)?)),
+        "agent.finished" | "session.finished" => {
+            Ok(EventBody::AgentFinished(agent_event(payload)?))
+        }
+        "agent.failed" | "session.failed" => Ok(EventBody::AgentFailed(agent_event(payload)?)),
         _ => Ok(EventBody::Custom(CustomEvent {
             kind: kind.to_string(),
             message: optional_string_field(payload, "message").unwrap_or_else(|| kind.to_string()),
@@ -238,8 +240,14 @@ fn agent_event(payload: &Value) -> Result<AgentEvent> {
 
 fn priority_for(kind: &str, payload: &Value) -> EventPriority {
     match kind {
-        "agent.failed" | "github.ci-failed" => EventPriority::Critical,
-        "agent.blocked" | "tmux.stale" => EventPriority::High,
+        "agent.failed" | "session.failed" | "session.test-failed" | "github.ci-failed" => {
+            EventPriority::Critical
+        }
+        "agent.blocked"
+        | "session.blocked"
+        | "session.retry-needed"
+        | "session.handoff-needed"
+        | "tmux.stale" => EventPriority::High,
         "github.pr-status-changed"
             if optional_string_field(payload, "new_status")
                 .map(|status| status == "merged" || status == "closed")

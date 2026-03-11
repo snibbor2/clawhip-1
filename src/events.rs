@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
@@ -550,6 +551,16 @@ impl IncomingEvent {
         match self.kind.as_str() {
             "issue-opened" => "github.issue-opened",
             "git.pr-status-changed" => "github.pr-status-changed",
+            "session-start" | "started" => "session.started",
+            "session-idle" | "blocked" => "session.blocked",
+            "session-end" | "finished" => "session.finished",
+            "failed" => "session.failed",
+            "retry-needed" => "session.retry-needed",
+            "pr-created" => "session.pr-created",
+            "test-started" => "session.test-started",
+            "test-finished" => "session.test-finished",
+            "test-failed" => "session.test-failed",
+            "handoff-needed" => "session.handoff-needed",
             other => other,
         }
     }
@@ -577,11 +588,352 @@ pub fn render_template(template: &str, context: &BTreeMap<String, String>) -> St
 }
 
 pub fn normalize_event(mut event: IncomingEvent) -> IncomingEvent {
-    event.kind = event.canonical_kind().to_string();
     if !event.payload.is_object() {
         event.payload = json!({ "value": event.payload });
     }
+
+    let raw_kind = event.kind.clone();
+    let canonical_kind = canonical_event_kind(&event.kind, &event.payload);
+    normalize_native_metadata(&mut event.payload, &raw_kind, &canonical_kind);
+    event.kind = canonical_kind;
     event
+}
+
+fn canonical_event_kind(kind: &str, payload: &Value) -> String {
+    match kind {
+        "issue-opened" => "github.issue-opened".to_string(),
+        "git.pr-status-changed" => "github.pr-status-changed".to_string(),
+        other => native_contract_kind(other, payload).unwrap_or_else(|| other.to_string()),
+    }
+}
+
+fn native_contract_kind(kind: &str, payload: &Value) -> Option<String> {
+    if let Some(route_key) = first_string(
+        payload,
+        &["/signal/routeKey", "/route_key", "/context/route_key"],
+    ) && let Some(mapped) = map_native_signal(route_key.as_str())
+    {
+        return Some(mapped.to_string());
+    }
+
+    if let Some(normalized_event) =
+        first_string(payload, &["/context/normalized_event", "/normalized_event"])
+        && let Some(mapped) = map_native_signal(normalized_event.as_str())
+    {
+        return Some(mapped.to_string());
+    }
+
+    map_native_signal(kind).map(ToString::to_string)
+}
+
+fn map_native_signal(raw: &str) -> Option<&'static str> {
+    let normalized = raw.trim().replace('_', "-").to_ascii_lowercase();
+    match normalized.as_str() {
+        "session-start" | "started" | "session.started" => Some("session.started"),
+        "session-idle" | "blocked" | "session.blocked" | "session.idle" | "question.requested" => {
+            Some("session.blocked")
+        }
+        "session-end" | "finished" | "session.finished" => Some("session.finished"),
+        "failed" | "session.failed" | "tool.failed" | "pull-request.failed" => {
+            Some("session.failed")
+        }
+        "retry-needed" | "session.retry-needed" => Some("session.retry-needed"),
+        "pr-created" | "session.pr-created" | "pull-request.created" => Some("session.pr-created"),
+        "test-started" | "session.test-started" | "test.started" => Some("session.test-started"),
+        "test-finished" | "session.test-finished" | "test.finished" => {
+            Some("session.test-finished")
+        }
+        "test-failed" | "session.test-failed" | "test.failed" => Some("session.test-failed"),
+        "handoff-needed" | "session.handoff-needed" => Some("session.handoff-needed"),
+        _ => None,
+    }
+}
+
+fn normalize_native_metadata(payload: &mut Value, raw_kind: &str, canonical_kind: &str) {
+    let tool = infer_tool(payload);
+    let session_name = first_string(
+        payload,
+        &[
+            "/session_name",
+            "/context/session_name",
+            "/session",
+            "/tmuxSession",
+            "/tmux_session",
+            "/context/tmuxSession",
+            "/context/tmux_session",
+            "/session_id",
+            "/sessionId",
+            "/context/session_id",
+            "/context/sessionId",
+        ],
+    );
+    let session_id = first_string(
+        payload,
+        &[
+            "/session_id",
+            "/sessionId",
+            "/context/session_id",
+            "/context/sessionId",
+            "/sessionId",
+            "/session_name",
+            "/context/session_name",
+        ],
+    );
+    let project = first_string(payload, &["/project", "/projectName", "/project_name"]);
+    let repo_name = first_string(
+        payload,
+        &["/repo_name", "/context/repo_name", "/projectName"],
+    )
+    .or_else(|| {
+        first_string(payload, &["/repo_path", "/context/repo_path"]).and_then(|path| {
+            Path::new(path.as_str())
+                .file_name()
+                .and_then(|value| value.to_str())
+                .map(ToString::to_string)
+        })
+    });
+    let repo_path = first_string(
+        payload,
+        &["/repo_path", "/context/repo_path", "/projectPath"],
+    );
+    let worktree_path = first_string(
+        payload,
+        &["/worktree_path", "/context/worktree_path", "/projectPath"],
+    );
+    let branch = first_string(payload, &["/branch", "/context/branch"]);
+    let command = first_string(
+        payload,
+        &["/command", "/context/command", "/signal/command"],
+    );
+    let tool_name = first_string(
+        payload,
+        &["/tool_name", "/context/tool_name", "/signal/toolName"],
+    );
+    let test_runner =
+        first_string(payload, &["/test_runner", "/signal/testRunner"]).or_else(|| {
+            command
+                .as_deref()
+                .and_then(infer_test_runner)
+                .map(ToString::to_string)
+        });
+    let status = first_string(payload, &["/status", "/context/status", "/signal/phase"])
+        .or_else(|| event_status_from_kind(canonical_kind).map(ToString::to_string));
+    let summary = first_string(
+        payload,
+        &[
+            "/summary",
+            "/signal/summary",
+            "/reason",
+            "/context/contextSummary",
+            "/context/reason",
+            "/context/question",
+        ],
+    );
+    let error_message = first_string(
+        payload,
+        &[
+            "/error_message",
+            "/error_summary",
+            "/context/error_summary",
+            "/context/error_message",
+        ],
+    )
+    .or_else(|| {
+        canonical_kind
+            .ends_with(".failed")
+            .then(|| summary.clone())
+            .flatten()
+    });
+    let event_timestamp = first_string(payload, &["/event_timestamp", "/timestamp"]);
+    let route_key = first_string(
+        payload,
+        &["/route_key", "/signal/routeKey", "/context/route_key"],
+    );
+    let source = first_string(payload, &["/source"]);
+    let mut issue_number =
+        first_u64(payload, &["/issue_number", "/context/issue_number"]).or_else(|| {
+            [
+                session_name.as_deref(),
+                branch.as_deref(),
+                worktree_path.as_deref(),
+                command.as_deref(),
+            ]
+            .into_iter()
+            .flatten()
+            .find_map(extract_issue_number)
+        });
+    let mut pr_number = first_u64(payload, &["/pr_number", "/context/pr_number"]);
+    let pr_url = first_string(payload, &["/pr_url", "/context/pr_url", "/signal/prUrl"]);
+    if pr_number.is_none() {
+        pr_number = pr_url.as_deref().and_then(extract_pr_number_from_url);
+    }
+    if issue_number.is_none() {
+        issue_number = pr_number;
+    }
+
+    let Some(object) = payload.as_object_mut() else {
+        return;
+    };
+
+    if raw_kind != canonical_kind {
+        object
+            .entry("raw_event".to_string())
+            .or_insert_with(|| json!(raw_kind));
+    }
+    object
+        .entry("contract_event".to_string())
+        .or_insert_with(|| json!(canonical_kind));
+
+    insert_string_if_missing(object, "tool", tool);
+    if (canonical_kind.starts_with("agent.") || canonical_kind.starts_with("session."))
+        && object.get("agent_name").is_none()
+        && let Some(tool) = object
+            .get("tool")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    {
+        object.insert("agent_name".to_string(), json!(tool));
+    }
+    insert_string_if_missing(object, "session_name", session_name);
+    insert_string_if_missing(object, "session_id", session_id);
+    insert_string_if_missing(object, "project", project);
+    insert_string_if_missing(object, "repo_name", repo_name);
+    insert_string_if_missing(object, "repo_path", repo_path);
+    insert_string_if_missing(object, "worktree_path", worktree_path);
+    insert_string_if_missing(object, "branch", branch);
+    insert_u64_if_missing(object, "issue_number", issue_number);
+    insert_u64_if_missing(object, "pr_number", pr_number);
+    insert_string_if_missing(object, "pr_url", pr_url);
+    insert_string_if_missing(object, "command", command);
+    insert_string_if_missing(object, "tool_name", tool_name);
+    insert_string_if_missing(object, "test_runner", test_runner);
+    insert_string_if_missing(object, "status", status);
+    insert_string_if_missing(object, "summary", summary);
+    insert_string_if_missing(object, "error_message", error_message);
+    insert_string_if_missing(object, "event_timestamp", event_timestamp);
+    insert_string_if_missing(object, "route_key", route_key);
+    insert_string_if_missing(object, "source", source);
+}
+
+fn infer_tool(payload: &Value) -> Option<String> {
+    if let Some(tool) = first_string(payload, &["/tool"]) {
+        return Some(tool);
+    }
+
+    match first_string(payload, &["/agent_name"])
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "omc" | "openclaw" => return Some("omc".to_string()),
+        "omx" => return Some("omx".to_string()),
+        _ => {}
+    }
+
+    if payload.pointer("/signal/routeKey").is_some() {
+        return Some("omc".to_string());
+    }
+    if payload.pointer("/context/normalized_event").is_some() {
+        return Some("omx".to_string());
+    }
+
+    None
+}
+
+fn infer_test_runner(command: &str) -> Option<&'static str> {
+    let command = command.to_ascii_lowercase();
+    if command.contains("cargo test") {
+        Some("cargo-test")
+    } else if command.contains("pytest") {
+        Some("pytest")
+    } else if command.contains("vitest") {
+        Some("vitest")
+    } else if command.contains("jest") {
+        Some("jest")
+    } else if command.contains("go test") {
+        Some("go-test")
+    } else if command.contains("npm test")
+        || command.contains("pnpm test")
+        || command.contains("yarn test")
+        || command.contains("bun test")
+    {
+        Some("package-test")
+    } else {
+        None
+    }
+}
+
+fn event_status_from_kind(kind: &str) -> Option<&'static str> {
+    match kind {
+        "agent.started" | "session.started" => Some("started"),
+        "agent.blocked" | "session.blocked" => Some("blocked"),
+        "agent.finished" | "session.finished" => Some("finished"),
+        "agent.failed" | "session.failed" => Some("failed"),
+        "session.retry-needed" => Some("retry-needed"),
+        "session.pr-created" => Some("pr-created"),
+        "session.test-started" => Some("test-started"),
+        "session.test-finished" => Some("test-finished"),
+        "session.test-failed" => Some("test-failed"),
+        "session.handoff-needed" => Some("handoff-needed"),
+        _ => None,
+    }
+}
+
+fn first_string(payload: &Value, pointers: &[&str]) -> Option<String> {
+    pointers.iter().find_map(|pointer| {
+        payload
+            .pointer(pointer)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string)
+    })
+}
+
+fn first_u64(payload: &Value, pointers: &[&str]) -> Option<u64> {
+    pointers
+        .iter()
+        .find_map(|pointer| payload.pointer(pointer).and_then(Value::as_u64))
+}
+
+fn insert_string_if_missing(object: &mut Map<String, Value>, key: &str, value: Option<String>) {
+    if object.get(key).is_none()
+        && let Some(value) = value
+    {
+        object.insert(key.to_string(), json!(value));
+    }
+}
+
+fn insert_u64_if_missing(object: &mut Map<String, Value>, key: &str, value: Option<u64>) {
+    if object.get(key).is_none()
+        && let Some(value) = value
+    {
+        object.insert(key.to_string(), json!(value));
+    }
+}
+
+fn extract_issue_number(text: &str) -> Option<u64> {
+    extract_number_after(text, "issue-")
+        .or_else(|| extract_number_after(text, "issue/"))
+        .or_else(|| extract_number_after(text, "issue#"))
+        .or_else(|| extract_number_after(text, "#"))
+}
+
+fn extract_pr_number_from_url(url: &str) -> Option<u64> {
+    url.split("/pull/").nth(1)?.split('/').next()?.parse().ok()
+}
+
+fn extract_number_after(text: &str, marker: &str) -> Option<u64> {
+    let text = text.to_ascii_lowercase();
+    let marker = marker.to_ascii_lowercase();
+    let start = text.find(marker.as_str())? + marker.len();
+    let digits = text[start..]
+        .chars()
+        .take_while(|ch| ch.is_ascii_digit())
+        .collect::<String>();
+    (!digits.is_empty()).then(|| digits.parse().ok()).flatten()
 }
 
 fn short_sha(commit: &str) -> String {
@@ -918,6 +1270,98 @@ mod tests {
         assert_eq!(
             event.render_default(&MessageFormat::Alert).unwrap(),
             "🚨 CI started · clawhip#58 · CI / test · in_progress · abcdef1 · https://github.com/Yeachan-Heo/clawhip/actions/runs/1"
+        );
+    }
+
+    #[test]
+    fn normalize_event_backfills_agent_emit_status_fields() {
+        let event = normalize_event(IncomingEvent {
+            kind: "agent.finished".into(),
+            channel: None,
+            mention: Some("<@123>".into()),
+            format: None,
+            template: None,
+            payload: json!({
+                "agent_name": "omc",
+                "session_id": "issue-65",
+                "project": "clawhip",
+                "elapsed_secs": 42
+            }),
+        });
+
+        assert_eq!(event.kind, "agent.finished");
+        assert_eq!(event.payload["status"], json!("finished"));
+        assert_eq!(event.payload["tool"], json!("omc"));
+        assert_eq!(event.payload["agent_name"], json!("omc"));
+    }
+
+    #[test]
+    fn normalize_event_maps_omx_native_contract_into_session_event() {
+        let event = normalize_event(IncomingEvent {
+            kind: "notify".into(),
+            channel: None,
+            mention: None,
+            format: None,
+            template: None,
+            payload: json!({
+                "event": "test-failed",
+                "timestamp": "2026-03-09T18:07:07.000Z",
+                "context": {
+                    "normalized_event": "test-failed",
+                    "session_name": "issue-65-native-event-contract-polish",
+                    "repo_name": "clawhip",
+                    "repo_path": "/repo/clawhip",
+                    "worktree_path": "/repo/clawhip-worktrees/issue-65",
+                    "branch": "feat/issue-65-native-event-contract-polish",
+                    "issue_number": 65,
+                    "error_summary": "cargo test failed"
+                }
+            }),
+        });
+
+        assert_eq!(event.kind, "session.test-failed");
+        assert_eq!(event.payload["tool"], json!("omx"));
+        assert_eq!(
+            event.payload["session_name"],
+            json!("issue-65-native-event-contract-polish")
+        );
+        assert_eq!(event.payload["repo_name"], json!("clawhip"));
+        assert_eq!(event.payload["issue_number"], json!(65));
+        assert_eq!(event.payload["error_message"], json!("cargo test failed"));
+        assert_eq!(
+            event.payload["event_timestamp"],
+            json!("2026-03-09T18:07:07.000Z")
+        );
+    }
+
+    #[test]
+    fn renders_session_contract_events_in_low_noise_formats() {
+        let event = normalize_event(IncomingEvent {
+            kind: "pr-created".into(),
+            channel: None,
+            mention: None,
+            format: None,
+            template: None,
+            payload: json!({
+                "context": {
+                    "normalized_event": "pr-created",
+                    "session_name": "issue-65",
+                    "repo_name": "clawhip",
+                    "branch": "feat/issue-65-native-event-contract-polish",
+                    "issue_number": 65,
+                    "pr_number": 71,
+                    "pr_url": "https://github.com/Yeachan-Heo/clawhip/pull/71"
+                }
+            }),
+        });
+
+        assert_eq!(
+            event.render_default(&MessageFormat::Compact).unwrap(),
+            "omx issue-65 pr-created (repo=clawhip, issue=#65, pr=#71, branch=feat/issue-65-native-event-contract-polish)"
+        );
+        assert_eq!(
+            event.render_default(&MessageFormat::Inline).unwrap(),
+            "[omx issue-65] pr-created · clawhip · issue #65 · PR #71 · feat/issue-65-native-event-contract-polish"
         );
     }
 

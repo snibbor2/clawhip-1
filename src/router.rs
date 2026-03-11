@@ -238,7 +238,18 @@ fn route_candidates(kind: &str) -> Vec<&str> {
         "git.commit" => vec!["git.commit", "github.commit"],
         "git.branch-changed" => vec!["git.branch-changed", "github.branch-changed"],
         "agent.started" | "agent.blocked" | "agent.finished" | "agent.failed" => {
-            vec![kind, "agent.*"]
+            vec![kind, "agent.*", "session.*"]
+        }
+        "session.started" | "session.blocked" | "session.finished" | "session.failed" => {
+            vec![kind, "session.*", "agent.*"]
+        }
+        "session.retry-needed"
+        | "session.pr-created"
+        | "session.test-started"
+        | "session.test-finished"
+        | "session.test-failed"
+        | "session.handoff-needed" => {
+            vec![kind, "session.*"]
         }
         other => vec![other],
     }
@@ -288,8 +299,10 @@ fn glob_match(pattern: &str, value: &str) -> bool {
 mod tests {
     use super::*;
     use crate::config::{DefaultsConfig, RouteRule};
+    use crate::events::normalize_event;
     use crate::render::DefaultRenderer;
     use crate::sink::{DiscordSink, SlackSink};
+    use serde_json::json;
 
     #[tokio::test]
     async fn resolve_returns_all_matching_deliveries_in_route_order() {
@@ -847,6 +860,55 @@ mod tests {
         assert!(started_content.contains("started"));
         assert!(finished_content.contains("worker-1"));
         assert!(finished_content.contains("finished"));
+    }
+
+    #[tokio::test]
+    async fn session_lifecycle_events_match_existing_agent_routes() {
+        let config = AppConfig {
+            defaults: DefaultsConfig {
+                channel: Some("default".into()),
+                format: MessageFormat::Compact,
+            },
+            routes: vec![RouteRule {
+                event: "agent.*".into(),
+                sink: "discord".into(),
+                filter: [
+                    ("tool".to_string(), "omx".to_string()),
+                    ("repo_name".to_string(), "clawhip".to_string()),
+                ]
+                .into_iter()
+                .collect(),
+                channel: Some("agent-route".into()),
+                webhook: None,
+                slack_webhook: None,
+                mention: None,
+                allow_dynamic_tokens: false,
+                format: Some(MessageFormat::Compact),
+                template: None,
+            }],
+            ..AppConfig::default()
+        };
+        let router = Router::new(Arc::new(config));
+        let event = normalize_event(IncomingEvent {
+            kind: "finished".into(),
+            channel: None,
+            mention: None,
+            format: None,
+            template: None,
+            payload: json!({
+                "context": {
+                    "normalized_event": "finished",
+                    "session_name": "issue-65",
+                    "repo_name": "clawhip"
+                }
+            }),
+        });
+
+        let (channel, format, content) = router.preview(&event).await.unwrap();
+
+        assert_eq!(channel, "agent-route");
+        assert_eq!(format, MessageFormat::Compact);
+        assert!(content.contains("omx issue-65 finished"));
     }
 
     #[tokio::test]
