@@ -602,8 +602,6 @@ impl IncomingEvent {
     pub fn template_context(&self) -> BTreeMap<String, String> {
         let mut context = BTreeMap::new();
         let canonical_kind = self.canonical_kind().to_string();
-        context.insert("kind".to_string(), canonical_kind.clone());
-        context.insert("event".to_string(), canonical_kind.clone());
         if let Some(channel) = self
             .channel
             .as_deref()
@@ -639,13 +637,24 @@ impl IncomingEvent {
 }
 
 fn insert_context_aliases(context: &mut BTreeMap<String, String>, canonical_kind: &str) {
+    if let Some(payload_event) = context.insert("event".to_string(), canonical_kind.to_string()) {
+        context
+            .entry("payload_event".to_string())
+            .or_insert(payload_event);
+    }
+    if let Some(payload_contract_event) =
+        context.insert("contract_event".to_string(), canonical_kind.to_string())
+    {
+        context
+            .entry("payload_contract_event".to_string())
+            .or_insert(payload_contract_event);
+    }
+    context.insert("kind".to_string(), canonical_kind.to_string());
+
     insert_context_alias_pair(context, "repo", "repo_name");
     insert_context_alias_pair(context, "session", "session_name");
     insert_context_alias_pair(context, "channel", "channel_hint");
 
-    context
-        .entry("contract_event".to_string())
-        .or_insert_with(|| canonical_kind.to_string());
     context
         .entry("route_key".to_string())
         .or_insert_with(|| canonical_kind.to_string());
@@ -1183,6 +1192,47 @@ mod tests {
         assert_eq!(
             tmux_context.get("channel_hint").map(String::as_str),
             Some("alerts")
+        );
+    }
+
+    #[test]
+    fn template_context_preserves_payload_event_without_overwriting_canonical_aliases() {
+        let event = normalize_event(IncomingEvent {
+            kind: "notify".into(),
+            channel: None,
+            mention: None,
+            format: None,
+            template: None,
+            payload: json!({
+                "event": "test-failed",
+                "contract_event": "legacy.test-failed",
+                "context": {
+                    "normalized_event": "test-failed"
+                }
+            }),
+        });
+
+        let context = event.template_context();
+        assert_eq!(event.kind, "session.test-failed");
+        assert_eq!(
+            context.get("kind").map(String::as_str),
+            Some("session.test-failed")
+        );
+        assert_eq!(
+            context.get("event").map(String::as_str),
+            Some("session.test-failed")
+        );
+        assert_eq!(
+            context.get("contract_event").map(String::as_str),
+            Some("session.test-failed")
+        );
+        assert_eq!(
+            context.get("payload_event").map(String::as_str),
+            Some("test-failed")
+        );
+        assert_eq!(
+            context.get("payload_contract_event").map(String::as_str),
+            Some("legacy.test-failed")
         );
     }
 
