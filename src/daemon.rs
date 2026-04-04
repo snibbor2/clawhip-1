@@ -466,29 +466,25 @@ mod tests {
             .expect("source alert event");
 
         assert_eq!(event.kind, "custom");
-        assert_eq!(event.channel, None);
+        assert_eq!(event.channel, Some("ops".into()));
         assert_eq!(event.format, Some(MessageFormat::Alert));
-        assert_eq!(event.payload["source_name"], Value::from("cron"));
-        assert_eq!(event.payload["health_status"], Value::from("degraded"));
-        assert!(
-            event.payload["error_message"]
-                .as_str()
-                .is_some_and(|message| message.contains("EOF while parsing a value"))
-        );
+        assert_eq!(event.payload["source_name"], Value::Null);
+        assert_eq!(event.payload["health_status"], Value::Null);
+        assert_eq!(event.payload["error_message"], Value::Null);
+        assert_eq!(event.payload["cron_job_id"], Value::from("dev-followup"));
+        assert_eq!(event.payload["cron_schedule"], Value::from("* * * * *"));
+        assert_eq!(event.payload["cron_timezone"], Value::from("UTC"));
+        assert_eq!(event.payload["message"], Value::from("check open PRs"));
 
         let router = Router::new(Arc::new(config));
         let delivery = router.preview_delivery(&event).await.expect("delivery");
-        assert_eq!(
-            delivery.target,
-            SinkTarget::DiscordChannel("default-alerts".into())
-        );
+        assert_eq!(delivery.target, SinkTarget::DiscordChannel("ops".into()));
 
         let rendered = router
             .render_delivery(&event, &delivery, &crate::render::DefaultRenderer)
             .await
             .expect("rendered alert");
-        assert!(rendered.contains("source 'cron' stopped"));
-        assert!(rendered.contains("EOF while parsing a value"));
+        assert!(rendered.contains("check open PRs"));
     }
 
     #[tokio::test]
