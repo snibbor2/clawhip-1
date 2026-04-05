@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.5.4 - 2026-04-05
+
+### Highlights
+
+- native OMC/OMX lifecycle hooks with one-shot installer (`clawhip hooks install --omc|--omx|--all`)
+- `clawhip omc "prompt"` and `clawhip omx launch "prompt"` for guaranteed prompt delivery with TUI detection
+- session-init and session-stop hooks emit `session.started` / `session.finished` / `session.failed` to clawhip daemon
+- cleaned up accidentally committed embedded worktree and local agent state from repo history
+
+### Upgrade notes
+
+- crate version is now `0.5.4`
+- run `clawhip hooks install --omc` to deploy OMC lifecycle hooks to `~/.claude/hooks/`
+- run `clawhip hooks install --omx` for OMX lifecycle hooks
+- existing config remains compatible; no migration required
+
 ## 0.5.3 - 2026-04-04
 
 ### Highlights
