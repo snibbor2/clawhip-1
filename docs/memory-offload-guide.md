@@ -34,14 +34,124 @@ What `clawhip memory init` bootstraps:
 
 - `MEMORY.md`
 - `memory/README.md`
-- `memory/daily/YYYY-MM-DD.md`
-- `memory/projects/<project>.md`
+- `memory/scaffold.toml`
+- `memory/projects/<project>/README.md`
+- `memory/projects/<project>/daily/YYYY-MM-DD.md`
+- `memory/projects/<project>/audit/README.md`
+- compatibility pointers such as `memory/daily/YYYY-MM-DD.md`
+- compatibility pointers such as `memory/projects/<project>.md`
 - `memory/topics/rules.md`
 - `memory/topics/lessons.md`
+- optional `memory/projects/<project>/channels/<channel>.md`
 - optional `memory/channels/<channel>.md`
 - optional `memory/agents/<agent>.md`
 
 The command leaves existing files untouched by default and only overwrites scaffold files when you pass `--force`.
+
+### Deep hierarchy mode
+
+Use `--hierarchy deep` for the production-validated nested structure:
+
+```bash
+# full deep scaffold with folder-based daily partitions and tag headers
+clawhip memory init --project clawhip --hierarchy deep --daily-format folder --tags
+```
+
+This creates the extended tree:
+
+```
+memory/
+├── daily/
+│   └── YYYY-MM/
+│       └── DD/
+│           ├── {project}.md
+│           ├── heartbeat.md
+│           ├── lessons.md
+│           └── directives.md
+├── projects/
+│   └── {project}/
+│       ├── plans/
+│       ├── decisions/log.md
+│       ├── status/current.md
+│       └── reference/
+├── ops/
+│   ├── infra/
+│   ├── rules/
+│   └── sns/
+├── channels/
+│   ├── internal/
+│   └── external/
+├── bots/
+├── bounties/
+│   ├── active/
+│   ├── prompts/
+│   └── archive/
+├── research/
+│   ├── articles/
+│   ├── proposals/
+│   └── topics/
+└── lessons.md
+```
+
+Flags:
+- `--hierarchy flat` (default): backward-compatible flat scaffold
+- `--hierarchy deep`: full nested tree
+- `--daily-format file` (default): one `.md` per day
+- `--daily-format folder`: one folder per day with category sub-files
+- `--tags`: include Korean tag headers (`> 태그: #project #type`) in generated files
+
+## Audit command
+
+Check memory scaffold health:
+
+```bash
+# report issues
+clawhip memory audit --project clawhip
+
+# auto-fix detected issues
+clawhip memory audit --project clawhip --fix
+
+# send audit summary to Discord
+clawhip memory audit --project clawhip --report-channel 1489922370063040522
+```
+
+Checks performed:
+- Stray daily files at root level (should be in `daily/YYYY-MM/DD/`)
+- Missing tag headers on markdown files
+- `MEMORY.md` staleness (pointer count vs actual file count)
+- Empty directories in the expected tree
+- Projects missing `status/current.md` or `decisions/log.md`
+
+## Daily rotation
+
+Create today's daily folder with standard category stubs:
+
+```bash
+clawhip memory rotate --project clawhip
+clawhip memory rotate --project clawhip --date 2026-04-06
+```
+
+## Cron audit
+
+The first runtime slice also adds a scheduled scaffold audit via `[[cron.jobs]]`:
+
+```toml
+[[cron.jobs]]
+id = "memory-audit"
+schedule = "0 */6 * * *"
+channel = "ops"
+kind = "memory-audit"
+root = "/path/to/repo"
+project = "clawhip"
+memory_channel = "discord-alerts"
+auto_fix = true
+```
+
+When this job runs, clawhip:
+
+- inspects the expected project/channel/daily partition files
+- emits a custom event summarizing whether the scaffold looks ready
+- appends a markdown note to `memory/projects/<project>/audit/cron/YYYY-MM-DD.md`
 
 ## What goes where
 
@@ -92,9 +202,9 @@ Use rules like these:
 
 | If the update is about... | Write to... |
 |---|---|
-| what happened today | `memory/daily/YYYY-MM-DD.md` |
-| one Discord/Slack/channel lane | `memory/channels/<channel>.md` |
-| one project/repo | `memory/projects/<project>.md` |
+| what happened today | `memory/projects/<project>/daily/YYYY-MM-DD.md` |
+| one Discord/Slack/channel lane | `memory/projects/<project>/channels/<channel>.md` |
+| one project/repo | `memory/projects/<project>/README.md` |
 | one agent/operator profile | `memory/agents/<agent>.md` |
 | reusable lessons | `memory/topics/lessons.md` |
 | durable policies/rules | `memory/topics/rules.md` |

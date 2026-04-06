@@ -88,7 +88,9 @@ pub async fn run_configured_job(config: &AppConfig, id: &str) -> Result<()> {
     }
 
     let client = DaemonClient::from_config(config);
-    client.emit(build_job_event(job)).await
+    client
+        .emit(build_job_event(job, OffsetDateTime::now_utc())?)
+        .await
 }
 
 pub fn validate_job(job: &CronJob) -> Result<()> {
@@ -103,6 +105,14 @@ pub fn validate_job(job: &CronJob) -> Result<()> {
             return Err(format!("cron job '{}' must set message", job.id).into());
         }
         CronJobKind::CustomMessage { .. } => {}
+        CronJobKind::MemoryAudit { root, date, .. } => {
+            if root.trim().is_empty() {
+                return Err(format!("cron job '{}' must set root", job.id).into());
+            }
+            if let Some(date) = date {
+                crate::memory::validate_date_slug(date)?;
+            }
+        }
     }
     validate_timezone(job)?;
     CronSchedule::parse(&job.schedule)
@@ -176,7 +186,9 @@ impl CronScheduler {
             let scheduled_for = OffsetDateTime::from_unix_timestamp(minute * 60)?;
             for job in &self.jobs {
                 if job.matches(scheduled_for)? {
-                    emitter.emit(build_job_event(&job.config)).await?;
+                    emitter
+                        .emit(build_job_event(&job.config, scheduled_for)?)
+                        .await?;
                     executed.push(job.config.id.clone());
                 }
             }
@@ -214,10 +226,54 @@ impl ScheduledCronJob {
     }
 }
 
-fn build_job_event(job: &CronJob) -> IncomingEvent {
+fn build_job_event(job: &CronJob, generated_at: OffsetDateTime) -> Result<IncomingEvent> {
     let mut event = match &job.kind {
         CronJobKind::CustomMessage { message } => {
             IncomingEvent::custom(job.channel.clone(), message.clone())
+        }
+        CronJobKind::MemoryAudit {
+            root,
+            project,
+            memory_channel,
+            agent,
+            date,
+            auto_fix: _,
+        } => {
+            let audit = crate::memory::run_cron_audit(
+                PathBuf::from(root),
+                project.clone(),
+                memory_channel.clone(),
+                agent.clone(),
+                date.clone(),
+                generated_at,
+            )?;
+            let mut event = IncomingEvent::custom(job.channel.clone(), audit.summary.clone());
+            if let Some(payload) = event.payload.as_object_mut() {
+                payload.insert(
+                    "memory_audit_report".to_string(),
+                    json!(audit.report_path.display().to_string()),
+                );
+                payload.insert(
+                    "memory_audit_missing_paths".to_string(),
+                    json!(
+                        audit
+                            .missing_paths
+                            .iter()
+                            .map(|path| path.display().to_string())
+                            .collect::<Vec<_>>()
+                    ),
+                );
+                payload.insert("memory_project".to_string(), json!(audit.project_slug));
+                payload.insert(
+                    "memory_daily_partition".to_string(),
+                    json!(audit.inspected_daily_slug),
+                );
+                payload.insert(
+                    "memory_markdown_file_count".to_string(),
+                    json!(audit.markdown_file_count),
+                );
+            }
+            event
         }
     }
     .with_mention(job.mention.clone())
@@ -229,7 +285,7 @@ fn build_job_event(job: &CronJob) -> IncomingEvent {
         payload.insert("cron_timezone".to_string(), json!(job.timezone));
     }
 
-    event
+    Ok(event)
 }
 
 fn validate_timezone(job: &CronJob) -> Result<()> {
@@ -453,11 +509,13 @@ fn save_scheduler_state(path: &Path, state: &CronSchedulerState) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::sync::{Arc, Mutex};
 
     use tempfile::tempdir;
     use time::{Date, Month, PrimitiveDateTime, Time};
 
+    use crate::cli::MemoryInitArgs;
     use crate::config::{CronConfig, DefaultsConfig};
     use crate::events::MessageFormat;
 
@@ -552,6 +610,60 @@ mod tests {
 
         let events = emitter.events.lock().expect("events lock");
         assert_eq!(events.len(), 2);
+    }
+
+    #[test]
+    fn memory_audit_job_writes_project_partition_report() {
+        let dir = tempdir().expect("tempdir");
+        crate::memory::init(MemoryInitArgs {
+            root: Some(dir.path().to_path_buf()),
+            project: Some("clawhip".into()),
+            channel: Some("discord-alerts".into()),
+            agent: None,
+            date: Some("2026-03-10".into()),
+            force: false,
+            hierarchy: crate::cli::HierarchyMode::Flat,
+            daily_format: crate::cli::DailyFormat::File,
+            tags: false,
+        })
+        .expect("initialize memory scaffold");
+
+        let job = CronJob {
+            id: "memory-audit".into(),
+            schedule: "0 * * * *".into(),
+            timezone: "UTC".into(),
+            enabled: true,
+            channel: Some("ops".into()),
+            mention: None,
+            format: Some(MessageFormat::Alert),
+            kind: CronJobKind::MemoryAudit {
+                root: dir.path().display().to_string(),
+                project: Some("clawhip".into()),
+                memory_channel: Some("discord-alerts".into()),
+                agent: None,
+                date: Some("2026-03-10".into()),
+                auto_fix: false,
+            },
+        };
+
+        let event = build_job_event(&job, dt(2026, Month::April, 2, 8, 0, 0)).expect("event");
+
+        assert_eq!(event.payload["memory_project"], json!("clawhip"));
+        assert_eq!(event.payload["memory_daily_partition"], json!("2026-03-10"));
+        assert_eq!(event.payload["memory_audit_missing_paths"], json!([]));
+
+        let report_path = event.payload["memory_audit_report"]
+            .as_str()
+            .expect("report path");
+        let report = fs::read_to_string(report_path).expect("read report");
+        assert!(report.contains("Status: `ready`"));
+        assert!(report.contains("memory/projects/clawhip/channels/discord-alerts.md"));
+        assert!(
+            event.payload["message"]
+                .as_str()
+                .expect("message")
+                .contains("memory audit ok")
+        );
     }
 
     #[test]

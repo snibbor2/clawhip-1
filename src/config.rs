@@ -375,7 +375,18 @@ pub struct CronJob {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum CronJobKind {
-    CustomMessage { message: String },
+    CustomMessage {
+        message: String,
+    },
+    MemoryAudit {
+        root: String,
+        project: Option<String>,
+        memory_channel: Option<String>,
+        agent: Option<String>,
+        date: Option<String>,
+        #[serde(default)]
+        auto_fix: bool,
+    },
 }
 
 pub fn default_config_path() -> PathBuf {
@@ -885,6 +896,20 @@ impl AppConfig {
                 CronJobKind::CustomMessage { message } => {
                     *message = normalize_text(Some(message.clone())).unwrap_or_default();
                 }
+                CronJobKind::MemoryAudit {
+                    root,
+                    project,
+                    memory_channel,
+                    agent,
+                    date,
+                    auto_fix: _,
+                } => {
+                    *root = normalize_text(Some(root.clone())).unwrap_or_default();
+                    *project = normalize_text(project.clone());
+                    *memory_channel = normalize_text(memory_channel.clone());
+                    *agent = normalize_text(agent.clone());
+                    *date = normalize_text(date.clone());
+                }
             }
         }
     }
@@ -1304,6 +1329,55 @@ message = " ping "
         assert_eq!(job.timezone, "UTC");
         match &job.kind {
             CronJobKind::CustomMessage { message } => assert_eq!(message, "ping"),
+            CronJobKind::MemoryAudit { .. } => panic!("expected custom-message"),
+        }
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn load_or_default_parses_memory_audit_cron_jobs() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(
+            &path,
+            r#"[providers.discord]
+token = "abc"
+
+[cron]
+
+[[cron.jobs]]
+id = "memory-audit"
+schedule = "0 * * * *"
+channel = "ops"
+kind = "memory-audit"
+root = " /tmp/workspace "
+project = " clawhip "
+memory_channel = " discord-alerts "
+date = "2026-03-10"
+"#,
+        )
+        .unwrap();
+
+        let config = AppConfig::load_or_default(&path).unwrap();
+        let job = &config.cron.jobs[0];
+
+        match &job.kind {
+            CronJobKind::MemoryAudit {
+                root,
+                project,
+                memory_channel,
+                agent,
+                date,
+                auto_fix,
+            } => {
+                assert_eq!(root, "/tmp/workspace");
+                assert_eq!(project.as_deref(), Some("clawhip"));
+                assert_eq!(memory_channel.as_deref(), Some("discord-alerts"));
+                assert_eq!(agent, &None);
+                assert!(!auto_fix);
+                assert_eq!(date.as_deref(), Some("2026-03-10"));
+            }
+            CronJobKind::CustomMessage { .. } => panic!("expected memory-audit"),
         }
         assert!(config.validate().is_ok());
     }

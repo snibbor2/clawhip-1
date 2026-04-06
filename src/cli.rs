@@ -450,6 +450,26 @@ pub enum MemoryCommands {
     Init(MemoryInitArgs),
     /// Inspect whether a filesystem-offloaded memory scaffold is present.
     Status(MemoryStatusArgs),
+    /// Audit memory scaffold health and report issues.
+    Audit(MemoryAuditArgs),
+    /// Create today's daily rotation folder with standard category files.
+    Rotate(MemoryRotateArgs),
+}
+
+#[derive(Debug, Clone, ValueEnum)]
+pub enum HierarchyMode {
+    /// Flat scaffold (backward-compatible default).
+    Flat,
+    /// Deep hierarchy with nested project/channel/daily partitions.
+    Deep,
+}
+
+#[derive(Debug, Clone, ValueEnum)]
+pub enum DailyFormat {
+    /// One markdown file per day (YYYY-MM-DD.md).
+    File,
+    /// One folder per day (daily/YYYY-MM/DD/) with category sub-files.
+    Folder,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -472,6 +492,15 @@ pub struct MemoryInitArgs {
     /// Overwrite generated scaffold files when they already exist.
     #[arg(long, default_value_t = false)]
     pub force: bool,
+    /// Scaffold hierarchy mode.
+    #[arg(long, value_enum, default_value_t = HierarchyMode::Flat)]
+    pub hierarchy: HierarchyMode,
+    /// Daily partition format.
+    #[arg(long, value_enum, default_value_t = DailyFormat::File)]
+    pub daily_format: DailyFormat,
+    /// Include tag headers in generated scaffold files.
+    #[arg(long, default_value_t = false)]
+    pub tags: bool,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -489,6 +518,35 @@ pub struct MemoryStatusArgs {
     #[arg(long)]
     pub agent: Option<String>,
     /// Daily shard name to inspect under memory/daily/ (YYYY-MM-DD).
+    #[arg(long)]
+    pub date: Option<String>,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct MemoryAuditArgs {
+    /// Root directory where MEMORY.md and memory/ should live.
+    #[arg(long)]
+    pub root: Option<PathBuf>,
+    /// Stable project slug to audit.
+    #[arg(long)]
+    pub project: Option<String>,
+    /// Auto-fix detected issues (move strays, add missing tags, update map).
+    #[arg(long, default_value_t = false)]
+    pub fix: bool,
+    /// Send audit summary to a Discord channel via the clawhip daemon.
+    #[arg(long)]
+    pub report_channel: Option<String>,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct MemoryRotateArgs {
+    /// Root directory where MEMORY.md and memory/ should live.
+    #[arg(long)]
+    pub root: Option<PathBuf>,
+    /// Stable project slug for daily rotation.
+    #[arg(long)]
+    pub project: Option<String>,
+    /// Date to rotate (YYYY-MM-DD); defaults to today.
     #[arg(long)]
     pub date: Option<String>,
 }

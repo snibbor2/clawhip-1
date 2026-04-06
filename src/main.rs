@@ -268,6 +268,8 @@ async fn real_main() -> Result<()> {
         Commands::Memory { command } => match command {
             MemoryCommands::Init(args) => memory::init(args),
             MemoryCommands::Status(args) => memory::status(args),
+            MemoryCommands::Audit(args) => memory::audit(args).await,
+            MemoryCommands::Rotate(args) => memory::rotate(args),
         },
     }
 }
