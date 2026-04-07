@@ -101,7 +101,14 @@ pub enum Commands {
         skip_star_prompt: bool,
     },
     /// Update clawhip from the current git clone.
+    ///
+    /// Without a subcommand, behaves like the legacy `clawhip update --restart`
+    /// (pull + reinstall + optional restart). Use subcommands for daemon-aware
+    /// operations: check, approve, dismiss, status.
     Update {
+        #[command(subcommand)]
+        command: Option<UpdateCommands>,
+        /// Restart the systemd service after updating (legacy flag, used when no subcommand is given).
         #[arg(long, default_value_t = false)]
         restart: bool,
     },
@@ -380,6 +387,18 @@ pub enum CronCommands {
         /// Cron job id from [[cron.jobs]].id.
         id: String,
     },
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum UpdateCommands {
+    /// Check whether a newer release is available on GitHub.
+    Check,
+    /// Approve a pending update detected by the daemon.
+    Approve,
+    /// Dismiss (skip) a pending update without applying it.
+    Dismiss,
+    /// Show the current pending-update status from the daemon.
+    Status,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -1188,5 +1207,73 @@ mod tests {
         assert!(args.omx);
         assert_eq!(args.omc_dir, Some(PathBuf::from("/tmp/claude-hooks")));
         assert_eq!(args.omx_dir, Some(PathBuf::from("/tmp/omx-hooks")));
+    }
+
+    #[test]
+    fn bare_update_preserves_legacy_restart_flag() {
+        let cli = Cli::parse_from(["clawhip", "update", "--restart"]);
+
+        let Commands::Update { command, restart } = cli.command.expect("update command") else {
+            panic!("expected update command");
+        };
+
+        assert!(command.is_none());
+        assert!(restart);
+    }
+
+    #[test]
+    fn bare_update_without_restart_defaults_to_false() {
+        let cli = Cli::parse_from(["clawhip", "update"]);
+
+        let Commands::Update { command, restart } = cli.command.expect("update command") else {
+            panic!("expected update command");
+        };
+
+        assert!(command.is_none());
+        assert!(!restart);
+    }
+
+    #[test]
+    fn parses_update_check_subcommand() {
+        let cli = Cli::parse_from(["clawhip", "update", "check"]);
+
+        let Commands::Update { command, .. } = cli.command.expect("update command") else {
+            panic!("expected update command");
+        };
+
+        assert!(matches!(command, Some(UpdateCommands::Check)));
+    }
+
+    #[test]
+    fn parses_update_approve_subcommand() {
+        let cli = Cli::parse_from(["clawhip", "update", "approve"]);
+
+        let Commands::Update { command, .. } = cli.command.expect("update command") else {
+            panic!("expected update command");
+        };
+
+        assert!(matches!(command, Some(UpdateCommands::Approve)));
+    }
+
+    #[test]
+    fn parses_update_dismiss_subcommand() {
+        let cli = Cli::parse_from(["clawhip", "update", "dismiss"]);
+
+        let Commands::Update { command, .. } = cli.command.expect("update command") else {
+            panic!("expected update command");
+        };
+
+        assert!(matches!(command, Some(UpdateCommands::Dismiss)));
+    }
+
+    #[test]
+    fn parses_update_status_subcommand() {
+        let cli = Cli::parse_from(["clawhip", "update", "status"]);
+
+        let Commands::Update { command, .. } = cli.command.expect("update command") else {
+            panic!("expected update command");
+        };
+
+        assert!(matches!(command, Some(UpdateCommands::Status)));
     }
 }
