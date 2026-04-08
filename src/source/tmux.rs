@@ -483,6 +483,33 @@ async fn poll_tmux(
         if registration.active_wrapper_monitor {
             state.pending_keyword_hits.remove(session_name);
             state.session_last_heartbeat.remove(session_name);
+            // Still snapshot for live state even though events are handled by wrapper
+            if let Ok(panes) = snapshot_tmux_session(session_name).await {
+                for pane in &panes {
+                    let pane_key = format!("{}::{}", pane.session, pane.pane_id);
+                    active_panes.insert(pane_key.clone());
+                    let hash = content_hash(&pane.content);
+                    state
+                        .panes
+                        .entry(pane_key)
+                        .or_insert_with(|| TmuxPaneState {
+                            session: pane.session.clone(),
+                            pane_name: pane.pane_name.clone(),
+                            snapshot: pane.content.clone(),
+                            content_hash: hash,
+                            last_change: Instant::now(),
+                            last_stale_notification: None,
+                            pane_dead: false,
+                            is_waiting: false,
+                            last_activity_rfc3339: Some(current_timestamp_rfc3339()),
+                        });
+                }
+                let live = build_session_live_state(session_name, &state.panes);
+                let mut write = registry.write().await;
+                if let Some(entry) = write.get_mut(session_name) {
+                    entry.live_state = Some(live);
+                }
+            }
             continue;
         }
 
