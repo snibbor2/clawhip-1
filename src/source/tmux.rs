@@ -726,6 +726,7 @@ async fn sync_active_config_registrations(
             }) {
                 registration.registered_at = existing.registered_at.clone();
                 registration.parent_process = existing.parent_process.clone();
+                registration.live_state = existing.live_state.clone();
             }
             (session, registration)
         })
