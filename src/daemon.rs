@@ -43,10 +43,12 @@ pub async fn run(
     config: Arc<AppConfig>,
     port_override: Option<u16>,
     cron_state_path: PathBuf,
+    verbose: bool,
 ) -> Result<()> {
+    crate::debug_log::set_verbose(verbose);
     config.validate()?;
     let token_source = config.discord_token_source();
-    println!("clawhip v{VERSION} starting (token_source: {token_source})");
+    println!("clawhip v{VERSION} starting (token_source: {token_source}, verbose: {verbose})");
 
     let mut sinks: HashMap<String, Box<dyn Sink>> = HashMap::new();
     sinks.insert(

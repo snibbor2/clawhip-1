@@ -1,5 +1,6 @@
 mod cli;
 mod client;
+mod debug_log;
 mod config;
 mod core;
 mod cron;
@@ -62,8 +63,11 @@ async fn real_main() -> Result<()> {
     let config = Arc::new(AppConfig::load_or_default(&config_path)?);
     let cron_state_path = crate::cron::default_state_path(&config_path);
 
-    match cli.command.unwrap_or(Commands::Start { port: None }) {
-        Commands::Start { port } => daemon::run(config, port, cron_state_path).await,
+    match cli.command.unwrap_or(Commands::Start { port: None, verbose: false }) {
+        Commands::Start { port, verbose } => {
+            let verbose = verbose || std::env::var("CLAWHIP_VERBOSE").as_deref() == Ok("1");
+            daemon::run(config, port, cron_state_path, verbose).await
+        }
         Commands::Status => {
             let client = DaemonClient::from_config(config.as_ref());
             let health = client.health().await?;

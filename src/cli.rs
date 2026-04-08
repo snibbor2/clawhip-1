@@ -39,6 +39,9 @@ pub enum Commands {
     Start {
         #[arg(long)]
         port: Option<u16>,
+        /// Enable verbose debug output (also set via CLAWHIP_VERBOSE=1).
+        #[arg(long, short = 'v')]
+        verbose: bool,
     },
     /// Check daemon health/status.
     Status,

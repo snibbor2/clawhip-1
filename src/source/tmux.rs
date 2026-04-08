@@ -502,6 +502,7 @@ async fn poll_tmux(
                     let pane_key = format!("{}::{}", pane.session, pane.pane_id);
                     active_panes.insert(pane_key.clone());
                     let hash = content_hash(&pane.content);
+                    let stable = content_hash_stable(&pane.content);
                     state
                         .panes
                         .entry(pane_key)
@@ -510,7 +511,9 @@ async fn poll_tmux(
                             pane_name: pane.pane_name.clone(),
                             snapshot: pane.content.clone(),
                             content_hash: hash,
+                            stable_hash: stable,
                             last_change: Instant::now(),
+                            last_stable_change: Instant::now(),
                             last_stale_notification: None,
                             pane_dead: false,
                             is_waiting: false,
@@ -2539,7 +2542,9 @@ error: failed";
             pane_name: "0.0".into(),
             snapshot: String::new(),
             content_hash: 0,
+            stable_hash: 0,
             last_change: Instant::now() - Duration::from_secs(3600),
+            last_stable_change: Instant::now() - Duration::from_secs(3600),
             last_stale_notification: None,
             pane_dead: false,
             is_waiting: false,
@@ -2556,7 +2561,9 @@ error: failed";
             pane_name: "0.0".into(),
             snapshot: String::new(),
             content_hash: 0,
+            stable_hash: 0,
             last_change: Instant::now() - Duration::from_secs(3600),
+            last_stable_change: Instant::now() - Duration::from_secs(3600),
             last_stale_notification: None,
             pane_dead: false,
             is_waiting: false,
@@ -2573,7 +2580,9 @@ error: failed";
             pane_name: "0.0".into(),
             snapshot: String::new(),
             content_hash: 0,
+            stable_hash: 0,
             last_change: Instant::now() - Duration::from_secs(3600),
+            last_stable_change: Instant::now() - Duration::from_secs(3600),
             last_stale_notification: None,
             pane_dead: true,
             is_waiting: false,
