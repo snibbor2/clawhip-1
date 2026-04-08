@@ -3,10 +3,10 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
-use axum::routing::{get, post};
+use axum::routing::{get, patch, post};
 use axum::{Json, Router as AxumRouter};
 use serde_json::{Value, json};
 use tokio::sync::{RwLock, mpsc};
@@ -23,8 +23,8 @@ use crate::render::{DefaultRenderer, Renderer};
 use crate::router::Router;
 use crate::sink::{DiscordSink, Sink, SlackSink};
 use crate::source::{
-    GitHubSource, GitSource, RegisteredTmuxSession, SharedTmuxRegistry, Source, TmuxSource,
-    WorkspaceSource, list_active_tmux_registrations,
+    GitHubSource, GitSource, RegisteredTmuxSession, SessionLiveState, SharedTmuxRegistry, Source,
+    TmuxSource, WorkspaceSource, list_active_tmux_registrations,
 };
 use crate::update::{self, SharedPendingUpdate};
 
@@ -103,6 +103,7 @@ pub async fn run(
         .route("/api/native/hook", post(post_native_hook))
         .route("/api/tmux/register", post(register_tmux))
         .route("/api/tmux", get(list_tmux))
+        .route("/api/tmux/:session/live-state", patch(patch_live_state))
         .route("/github", post(post_github))
         .route("/api/update/status", get(update_status))
         .route("/api/update/approve", post(approve_update))
@@ -270,6 +271,25 @@ async fn list_tmux(State(state): State<AppState>) -> impl IntoResponse {
         Err(error) => (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({"ok": false, "error": error.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+async fn patch_live_state(
+    State(state): State<AppState>,
+    Path(session): Path<String>,
+    Json(live_state): Json<SessionLiveState>,
+) -> impl IntoResponse {
+    let mut registry = state.tmux_registry.write().await;
+    match registry.get_mut(&session) {
+        Some(entry) => {
+            entry.live_state = Some(live_state);
+            (StatusCode::OK, Json(json!({"ok": true}))).into_response()
+        }
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"ok": false, "error": format!("session '{}' not found", session)})),
         )
             .into_response(),
     }

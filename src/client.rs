@@ -5,7 +5,7 @@ use serde_json::Value;
 use crate::Result;
 use crate::config::AppConfig;
 use crate::events::IncomingEvent;
-use crate::source::tmux::RegisteredTmuxSession;
+use crate::source::tmux::{RegisteredTmuxSession, SessionLiveState};
 
 #[derive(Clone)]
 pub struct DaemonClient {
@@ -47,6 +47,18 @@ impl DaemonClient {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
             Err(format!("daemon tmux list failed with {status}: {body}").into())
+        }
+    }
+
+    pub async fn update_live_state(&self, session: &str, state: &SessionLiveState) -> Result<()> {
+        let url = format!("{}/api/tmux/{}/live-state", self.base_url, session);
+        let response = self.http.patch(&url).json(state).send().await?;
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            Err(format!("daemon live-state update failed with {status}: {body}").into())
         }
     }
 

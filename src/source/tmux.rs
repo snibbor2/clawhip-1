@@ -46,6 +46,16 @@ pub struct ParentProcessInfo {
     pub name: Option<String>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct SessionLiveState {
+    pub is_waiting: bool,
+    pub pane_dead: bool,
+    /// RFC3339 timestamp of last pane content change
+    pub last_activity: Option<String>,
+    /// RFC3339 timestamp of last poll cycle (always updated)
+    pub last_poll: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RegisteredTmuxSession {
     pub session: String,
@@ -98,6 +108,8 @@ pub struct RegisteredTmuxSession {
     pub pin_activity: bool,
     #[serde(default)]
     pub pin_keywords: bool,
+    #[serde(default, skip_deserializing)]
+    pub live_state: Option<SessionLiveState>,
 }
 
 impl RegisteredTmuxSession {
@@ -150,6 +162,7 @@ impl From<&TmuxSessionMonitor> for RegisteredTmuxSession {
             pin_alerts: value.pin_alerts,
             pin_activity: value.pin_activity,
             pin_keywords: value.pin_keywords,
+            live_state: None,
         }
     }
 }
@@ -227,6 +240,7 @@ struct TmuxPaneState {
     last_stale_notification: Option<Instant>,
     pane_dead: bool,
     is_waiting: bool,
+    last_activity_rfc3339: Option<String>,
 }
 
 #[derive(Default)]
@@ -305,12 +319,14 @@ pub async fn monitor_registered_session(
                             last_stale_notification: None,
                             pane_dead: pane.pane_dead,
                             is_waiting: false,
+                            last_activity_rfc3339: Some(current_timestamp_rfc3339()),
                         },
                     );
                 }
                 Some(existing) => {
                     existing.pane_dead = pane.pane_dead;
                     if existing.content_hash != hash {
+                        existing.last_activity_rfc3339 = Some(current_timestamp_rfc3339());
                         let hits = collect_keyword_hits(
                             &existing.snapshot,
                             &pane.content,
@@ -397,6 +413,16 @@ pub async fn monitor_registered_session(
             Instant::now(),
         )
         .await?;
+
+        // Update live state via PATCH to daemon
+        let live = build_wrapper_live_state(&panes);
+        if let Err(err) = client.update_live_state(&registration.session, &live).await {
+            eprintln!(
+                "clawhip tmux wrapper live-state update failed for {}: {err}",
+                registration.session
+            );
+        }
+
         sleep(poll_interval).await;
     }
 
@@ -526,6 +552,7 @@ async fn poll_tmux(
                                     last_stale_notification: None,
                                     pane_dead: pane.pane_dead,
                                     is_waiting: false,
+                                    last_activity_rfc3339: Some(current_timestamp_rfc3339()),
                                 },
                             );
                             state
@@ -537,6 +564,7 @@ async fn poll_tmux(
                         Some(existing) => {
                             existing.pane_dead = pane.pane_dead;
                             if existing.content_hash != hash {
+                                existing.last_activity_rfc3339 = Some(current_timestamp_rfc3339());
                                 let hits = collect_keyword_hits(
                                     &existing.snapshot,
                                     &pane.content,
@@ -633,6 +661,15 @@ async fn poll_tmux(
                     session_changed,
                 )
                 .await?;
+
+                // Update live state in registry for this session
+                let live = build_session_live_state(session_name, &state.panes);
+                {
+                    let mut write = registry.write().await;
+                    if let Some(entry) = write.get_mut(session_name) {
+                        entry.live_state = Some(live);
+                    }
+                }
             }
             Err(error) => eprintln!(
                 "clawhip source tmux snapshot failed for {}: {error}",
@@ -1396,6 +1433,84 @@ fn tmux_stderr(stderr: &[u8]) -> String {
 
 fn default_keyword_window_secs() -> u64 {
     30
+}
+
+fn build_wrapper_live_state(panes: &HashMap<String, TmuxPaneState>) -> SessionLiveState {
+    let now_rfc3339 = current_timestamp_rfc3339();
+    let mut is_waiting = false;
+    let mut pane_dead = true;
+    let mut latest_activity: Option<String> = None;
+    let mut found_pane = false;
+
+    for pane in panes.values() {
+        found_pane = true;
+        if !pane.pane_dead {
+            pane_dead = false;
+        }
+        if pane.is_waiting {
+            is_waiting = true;
+        }
+        if let Some(ref activity) = pane.last_activity_rfc3339 {
+            match &latest_activity {
+                None => latest_activity = Some(activity.clone()),
+                Some(existing) if activity > existing => latest_activity = Some(activity.clone()),
+                _ => {}
+            }
+        }
+    }
+
+    if !found_pane {
+        pane_dead = false;
+    }
+
+    SessionLiveState {
+        is_waiting,
+        pane_dead,
+        last_activity: latest_activity,
+        last_poll: Some(now_rfc3339),
+    }
+}
+
+fn build_session_live_state(
+    session_name: &str,
+    panes: &HashMap<String, TmuxPaneState>,
+) -> SessionLiveState {
+    let now_rfc3339 = current_timestamp_rfc3339();
+    let mut is_waiting = false;
+    let mut pane_dead = true; // assume dead unless we find a live pane
+    let mut latest_activity: Option<String> = None;
+    let mut found_pane = false;
+
+    for (key, pane) in panes {
+        if !key.starts_with(&format!("{session_name}::")) {
+            continue;
+        }
+        found_pane = true;
+        if !pane.pane_dead {
+            pane_dead = false;
+        }
+        if pane.is_waiting {
+            is_waiting = true;
+        }
+        if let Some(ref activity) = pane.last_activity_rfc3339 {
+            match &latest_activity {
+                None => latest_activity = Some(activity.clone()),
+                Some(existing) if activity > existing => latest_activity = Some(activity.clone()),
+                _ => {}
+            }
+        }
+    }
+
+    if !found_pane {
+        pane_dead = false;
+    }
+
+    SessionLiveState {
+        is_waiting,
+        pane_dead,
+        last_activity: latest_activity,
+        last_poll: Some(now_rfc3339),
+    }
 }
 
 pub fn current_timestamp_rfc3339() -> String {
@@ -2194,6 +2309,7 @@ error: failed";
             last_stale_notification: None,
             pane_dead: false,
             is_waiting: false,
+            last_activity_rfc3339: None,
         };
         // stale_minutes=0 should never emit, even after 1 hour idle
         assert!(!should_emit_stale(&pane, Instant::now(), 0));
@@ -2210,6 +2326,7 @@ error: failed";
             last_stale_notification: None,
             pane_dead: false,
             is_waiting: false,
+            last_activity_rfc3339: None,
         };
         // stale_minutes=1 should emit after 1 hour idle
         assert!(should_emit_stale(&pane, Instant::now(), 1));
@@ -2226,6 +2343,7 @@ error: failed";
             last_stale_notification: None,
             pane_dead: true,
             is_waiting: false,
+            last_activity_rfc3339: None,
         };
         // Dead pane should never emit stale, even after 1 hour idle
         assert!(!should_emit_stale(&pane, Instant::now(), 1));

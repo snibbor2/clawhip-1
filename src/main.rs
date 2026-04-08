@@ -338,81 +338,272 @@ fn render_tmux_list(registrations: &[crate::source::RegisteredTmuxSession]) {
 }
 
 fn format_tmux_list(registrations: &[crate::source::RegisteredTmuxSession]) -> String {
+    use crate::source::RegisteredTmuxSession;
+    use time::format_description::well_known::Rfc3339;
+
     if registrations.is_empty() {
-        return "No active tmux watches found\n".to_string();
+        return "No active tmux sessions registered.\n".to_string();
     }
 
-    let mut output =
-        "SESSION\tCHANNEL\tKEYWORDS\tMENTION\tSTALE_MINUTES\tSOURCE\tREGISTERED_AT\tPARENT\n"
-            .to_string();
-    for registration in registrations {
-        let keywords = if registration.keywords.is_empty() {
-            "-".to_string()
-        } else {
-            registration.keywords.join(",")
-        };
-        let parent = registration
-            .parent_process
-            .as_ref()
-            .map(|parent| match parent.name.as_deref() {
-                Some(name) => format!("{}:{name}", parent.pid),
-                None => parent.pid.to_string(),
-            })
-            .unwrap_or_else(|| "-".to_string());
+    let col_session = registrations
+        .iter()
+        .map(|r| r.session.len())
+        .max()
+        .unwrap_or(7)
+        .max(7);
+    let col_status = 18;
+    let col_channel = registrations
+        .iter()
+        .map(|r| r.channel.as_deref().unwrap_or("-").len())
+        .max()
+        .unwrap_or(7)
+        .max(7);
+    let col_features = 22;
+    let col_registered = 12;
+
+    let mut output = format!(
+        "{:<w1$}  {:<w2$}  {:<w3$}  {:<w4$}  {}\n",
+        "SESSION",
+        "STATUS",
+        "CHANNEL",
+        "FEATURES",
+        "REGISTERED",
+        w1 = col_session,
+        w2 = col_status,
+        w3 = col_channel,
+        w4 = col_features,
+    );
+
+    let total = col_session + col_status + col_channel + col_features + col_registered + 10;
+    output.push_str(&"\u{2500}".repeat(total));
+    output.push('\n');
+
+    for r in registrations {
+        let status = format_live_status(r);
+        let channel = r.channel.as_deref().unwrap_or("-");
+        let features = format_features(r);
+        let registered = format_relative_time(&r.registered_at);
 
         output.push_str(&format!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
-            registration.session,
-            registration.channel.as_deref().unwrap_or("-"),
-            keywords,
-            registration.mention.as_deref().unwrap_or("-"),
-            registration.stale_minutes,
-            registration.registration_source.as_str(),
-            registration.registered_at,
-            parent,
+            "{:<w1$}  {:<w2$}  {:<w3$}  {:<w4$}  {}\n",
+            r.session,
+            status,
+            channel,
+            features,
+            registered,
+            w1 = col_session,
+            w2 = col_status,
+            w3 = col_channel,
+            w4 = col_features,
         ));
     }
 
-    output
+    return output;
+
+    fn format_live_status(r: &RegisteredTmuxSession) -> String {
+        match &r.live_state {
+            None => "\u{003F} unknown".to_string(),
+            Some(ls) => {
+                if ls.pane_dead {
+                    return "\u{2715} dead".to_string();
+                }
+                if ls.is_waiting {
+                    return "\u{26A0} waiting".to_string();
+                }
+                if let Some(last) = &ls.last_activity
+                    && let Ok(dt) = time::OffsetDateTime::parse(last, &Rfc3339)
+                {
+                    let duration: time::Duration = time::OffsetDateTime::now_utc() - dt;
+                    let elapsed_secs = duration.whole_seconds().max(0) as u64;
+                    let stale_secs = r.stale_minutes * 60;
+                    if stale_secs > 0 && elapsed_secs >= stale_secs {
+                        let idle_mins = elapsed_secs / 60;
+                        return format!("\u{25CC} idle {}m", idle_mins);
+                    }
+                    return "\u{25CF} active".to_string();
+                }
+                "\u{25CC} idle".to_string()
+            }
+        }
+    }
+
+    fn format_features(r: &RegisteredTmuxSession) -> String {
+        let mut parts = Vec::new();
+        let heartbeat = r.heartbeat_interval.max(r.heartbeat_mins);
+        if heartbeat > 0 {
+            parts.push("\u{2665}");
+        }
+        if r.summarize {
+            parts.push("sum");
+        }
+        if r.detect_waiting {
+            parts.push("wait");
+        }
+        let has_pins =
+            r.pin_status || r.pin_summary || r.pin_alerts || r.pin_activity || r.pin_keywords;
+        if has_pins {
+            parts.push("pins");
+        }
+        if !r.keywords.is_empty() {
+            parts.push("kw");
+        }
+        if parts.is_empty() {
+            "\u{2014}".to_string()
+        } else {
+            parts.join(" ")
+        }
+    }
+
+    fn format_relative_time(rfc3339: &str) -> String {
+        if let Ok(dt) = time::OffsetDateTime::parse(rfc3339, &Rfc3339) {
+            let duration: time::Duration = time::OffsetDateTime::now_utc() - dt;
+            let secs = duration.whole_seconds().max(0) as u64;
+            if secs < 120 {
+                return format!("{}s ago", secs);
+            }
+            let mins = secs / 60;
+            if mins < 120 {
+                return format!("{}m ago", mins);
+            }
+            let hours = mins / 60;
+            if hours < 48 {
+                return format!("{}h ago", hours);
+            }
+            return format!("{}d ago", hours / 24);
+        }
+        rfc3339.to_string()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::format_tmux_list;
-    use crate::events::RoutingMetadata;
-    use crate::source::tmux::{ParentProcessInfo, RegisteredTmuxSession, RegistrationSource};
+    use crate::source::tmux::{RegisteredTmuxSession, RegistrationSource, SessionLiveState};
 
-    #[test]
-    fn format_tmux_list_renders_metadata_columns() {
-        let output = format_tmux_list(&[RegisteredTmuxSession {
-            session: "issue-105".into(),
+    fn make_registration(session: &str) -> RegisteredTmuxSession {
+        RegisteredTmuxSession {
+            session: session.into(),
             channel: Some("alerts".into()),
-            mention: Some("<@123>".into()),
-            routing: RoutingMetadata::default(),
-            keywords: vec!["error".into(), "complete".into()],
-            keyword_window_secs: 30,
             stale_minutes: 10,
-            format: None,
             registered_at: "2026-04-02T00:00:00Z".into(),
             registration_source: RegistrationSource::CliWatch,
-            parent_process: Some(ParentProcessInfo {
-                pid: 4242,
-                name: Some("codex".into()),
-            }),
-            active_wrapper_monitor: true,
             ..Default::default()
-        }]);
+        }
+    }
 
-        assert!(output.contains(
-            "SESSION\tCHANNEL\tKEYWORDS\tMENTION\tSTALE_MINUTES\tSOURCE\tREGISTERED_AT\tPARENT"
-        ));
-        assert!(output.contains(
-            "issue-105\talerts\terror,complete\t<@123>\t10\tcli-watch\t2026-04-02T00:00:00Z\t4242:codex"
-        ));
+    #[test]
+    fn format_tmux_list_renders_new_columns() {
+        let mut reg = make_registration("issue-105");
+        reg.keywords = vec!["error".into()];
+        reg.summarize = true;
+        reg.heartbeat_interval = 5;
+        reg.detect_waiting = true;
+        reg.live_state = Some(SessionLiveState {
+            is_waiting: false,
+            pane_dead: false,
+            last_activity: Some(
+                time::OffsetDateTime::now_utc()
+                    .format(&time::format_description::well_known::Rfc3339)
+                    .unwrap(),
+            ),
+            last_poll: None,
+        });
+        let output = format_tmux_list(&[reg]);
+
+        assert!(output.contains("SESSION"));
+        assert!(output.contains("STATUS"));
+        assert!(output.contains("CHANNEL"));
+        assert!(output.contains("FEATURES"));
+        assert!(output.contains("REGISTERED"));
+        assert!(output.contains("issue-105"));
+        assert!(output.contains("active"));
+        assert!(output.contains("alerts"));
+        assert!(output.contains("sum"));
+        assert!(output.contains("wait"));
+        assert!(output.contains("kw"));
     }
 
     #[test]
     fn format_tmux_list_handles_empty_registry() {
-        assert_eq!(format_tmux_list(&[]), "No active tmux watches found\n");
+        assert_eq!(
+            format_tmux_list(&[]),
+            "No active tmux sessions registered.\n"
+        );
+    }
+
+    #[test]
+    fn format_features_shows_dash_when_no_features() {
+        let reg = RegisteredTmuxSession {
+            session: "plain".into(),
+            registered_at: "2026-04-02T00:00:00Z".into(),
+            ..Default::default()
+        };
+        let output = format_tmux_list(&[reg]);
+        assert!(output.contains("\u{2014}"));
+    }
+
+    #[test]
+    fn format_features_shows_heartbeat_and_pins() {
+        let mut reg = make_registration("feat-test");
+        reg.heartbeat_mins = 5;
+        reg.pin_status = true;
+        reg.live_state = Some(SessionLiveState::default());
+        let output = format_tmux_list(&[reg]);
+        assert!(output.contains("\u{2665}"));
+        assert!(output.contains("pins"));
+    }
+
+    #[test]
+    fn format_relative_time_seconds() {
+        let now = time::OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap();
+        let mut reg = make_registration("time-test");
+        reg.registered_at = now;
+        let output = format_tmux_list(&[reg]);
+        assert!(output.contains("s ago"));
+    }
+
+    #[test]
+    fn format_live_status_dead() {
+        let mut reg = make_registration("dead-test");
+        reg.live_state = Some(SessionLiveState {
+            is_waiting: false,
+            pane_dead: true,
+            last_activity: None,
+            last_poll: None,
+        });
+        let output = format_tmux_list(&[reg]);
+        assert!(output.contains("dead"));
+    }
+
+    #[test]
+    fn format_live_status_waiting() {
+        let mut reg = make_registration("wait-test");
+        reg.live_state = Some(SessionLiveState {
+            is_waiting: true,
+            pane_dead: false,
+            last_activity: None,
+            last_poll: None,
+        });
+        let output = format_tmux_list(&[reg]);
+        assert!(output.contains("waiting"));
+    }
+
+    #[test]
+    fn format_live_status_unknown() {
+        let reg = make_registration("unknown-test");
+        let output = format_tmux_list(&[reg]);
+        assert!(output.contains("unknown"));
+    }
+
+    #[test]
+    fn serde_skip_deserializing_live_state() {
+        let json = r#"{"session":"test","stale_minutes":10,"live_state":{"is_waiting":true,"pane_dead":false}}"#;
+        let reg: RegisteredTmuxSession = serde_json::from_str(json).unwrap();
+        assert!(
+            reg.live_state.is_none(),
+            "live_state should be None due to skip_deserializing"
+        );
     }
 }
