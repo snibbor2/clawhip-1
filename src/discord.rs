@@ -1,7 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use reqwest::StatusCode;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
@@ -59,6 +59,10 @@ struct DiscordState {
     keyword_log: HashMap<String, VecDeque<String>>,
     /// Path to dashboard persistence file.
     dashboard_path: Option<PathBuf>,
+    /// Sessions recently ended via clear_session_dashboard, keyed by "{channel}:{session}".
+    /// Suppresses orphan pin creates from in-flight heartbeats queued before session end.
+    /// Tombstone expires after 60s so fresh re-registrations can create new pins.
+    cleared_sessions: HashMap<String, Instant>,
 }
 
 #[derive(Debug)]
@@ -117,6 +121,7 @@ impl DiscordClient {
                 activity_log: HashMap::new(),
                 keyword_log: HashMap::new(),
                 dashboard_path,
+                cleared_sessions: HashMap::new(),
             })),
         })
     }
@@ -571,6 +576,7 @@ impl DiscordClient {
 
     /// Unpin all dashboard messages for a session and clear its slot IDs.
     async fn clear_session_dashboard(&self, channel_id: &str, session: &str) {
+        crate::debug_log!("discord: dashboard CLEAR session={session} channel={channel_id}");
         let slot_key = format!("{channel_id}:{session}");
 
         // Collect message IDs while holding the lock, then release before async calls
@@ -592,9 +598,10 @@ impl DiscordClient {
             let _ = self.unpin_message(channel_id, &msg_id).await;
         }
 
-        // Clear the IDs and persist
+        // Clear the IDs and stamp tombstone to suppress in-flight orphan heartbeats
         {
             let mut state = self.state.lock().expect("discord state lock");
+            state.cleared_sessions.insert(slot_key.clone(), Instant::now());
             state.dashboard_ids.remove(&slot_key);
             // Also clear in-memory keyword and activity logs for this session
             state
@@ -680,6 +687,26 @@ impl DiscordClient {
             }
         }
 
+        // Guard: suppress orphan pin creates for recently-ended sessions.
+        // In-flight heartbeats queued before session_ended are dropped here.
+        // Tombstone expires after 60s so re-registration of the same session works.
+        {
+            let mut state = self.state.lock().expect("discord state lock");
+            if let Some(cleared_at) = state.cleared_sessions.get(&slot_key) {
+                if cleared_at.elapsed() < Duration::from_secs(60) {
+                    crate::debug_log!(
+                        "discord: dashboard CREATE suppressed slot={slot} session={session} (session recently ended)"
+                    );
+                    return Ok(());
+                }
+                // Tombstone expired — remove it so fresh registrations work
+                state.cleared_sessions.remove(&slot_key);
+            }
+        }
+
+        crate::debug_log!(
+            "discord: dashboard CREATE slot={slot} session={session} channel={channel_id} pin={should_pin}"
+        );
         let new_id = self.send_message_returning_id(channel_id, content).await?;
         if let Some(id) = new_id {
             if should_pin {
