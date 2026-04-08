@@ -534,31 +534,30 @@ async fn poll_tmux(
                             false
                         };
 
-                        if changed {
-                            if let Some(pane) = state
+                        if changed
+                            && let Some(pane) = state
                                 .panes
                                 .values()
                                 .find(|p| p.session == *session_name)
-                            {
-                                let min_ok = registration.min_new_lines == 0
-                                    || count_new_lines(
-                                        last_sum_snapshot.as_deref().unwrap_or(""),
-                                        &pane.snapshot,
-                                    ) >= registration.min_new_lines;
-                                if min_ok {
-                                    let snapshot = pane.snapshot.clone();
-                                    let pane_name = pane.pane_name.clone();
-                                    spawn_content_changed_task(
-                                        tx.clone(),
-                                        registration.clone(),
-                                        session_name.clone(),
-                                        pane_name,
-                                        snapshot.clone(),
-                                        config.providers.clone(),
-                                    );
-                                    state.session_last_summarized.insert(session_name.to_string(), now);
-                                    state.session_last_summarized_snapshot.insert(session_name.to_string(), snapshot);
-                                }
+                        {
+                            let min_ok = registration.min_new_lines == 0
+                                || count_new_lines(
+                                    last_sum_snapshot.as_deref().unwrap_or(""),
+                                    &pane.snapshot,
+                                ) >= registration.min_new_lines;
+                            if min_ok {
+                                let snapshot = pane.snapshot.clone();
+                                let pane_name = pane.pane_name.clone();
+                                spawn_content_changed_task(
+                                    tx.clone(),
+                                    registration.clone(),
+                                    session_name.clone(),
+                                    pane_name,
+                                    snapshot.clone(),
+                                    config.providers.clone(),
+                                );
+                                state.session_last_summarized.insert(session_name.to_string(), now);
+                                state.session_last_summarized_snapshot.insert(session_name.to_string(), snapshot);
                             }
                         }
                     }
